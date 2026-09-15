@@ -443,3 +443,27 @@ fn explicit_cfg_selects_a_single_named_build_and_is_recorded() {
             .any(|pair| pair == ["--cfg", "chosen"])
     );
 }
+
+#[test]
+fn option_shaped_source_filename_is_passed_as_a_source_not_a_flag() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = "-Copt-level=3.rs";
+    fs::write(temp.path().join(source), "pub fn entry() {}").unwrap();
+    let output = temp.path().join("facts.json");
+    success(
+        &command(temp.path(), source, &output, "unwind")
+            .output()
+            .unwrap(),
+    );
+    let bundle: CompilerBundle = serde_json::from_slice(&fs::read(output).unwrap()).unwrap();
+    assert_eq!(bundle.bodies[0].def_path, "fixture::entry");
+    assert_eq!(bundle.inputs.crate_root, source);
+    assert_eq!(bundle.inputs.rustc_args[1], format!("./{source}"));
+    assert!(
+        !bundle
+            .inputs
+            .rustc_args
+            .iter()
+            .any(|arg| arg.starts_with('/'))
+    );
+}

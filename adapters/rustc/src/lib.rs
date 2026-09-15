@@ -129,6 +129,16 @@ pub fn sha256(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+fn normalized_args(args: &[String], compiler: &CompilerIdentity) -> Result<Vec<String>> {
+    let mut recorded = args.to_vec();
+    let sysroot = recorded
+        .windows(2)
+        .position(|pair| pair[0] == "--sysroot")
+        .context("compiler invocation is missing its explicit sysroot")?;
+    recorded[sysroot + 1] = format!("compiler:{}:{}", compiler.commit_hash, compiler.host);
+    Ok(recorded)
+}
+
 pub fn run(options: Options) -> Result<()> {
     ensure!(
         env!("ATLAS_RUSTC_HOST") == TARGET,
@@ -143,7 +153,7 @@ pub fn run(options: Options) -> Result<()> {
     let capture = Arc::new(capture::Capture::new(options.root.clone()));
     let mut args = vec![
         "atlas-rustc".into(),
-        source.clone(),
+        format!("./{source}"),
         "--crate-name".into(),
         options.crate_name.clone(),
         "--crate-type=lib".into(),
@@ -171,6 +181,7 @@ pub fn run(options: Options) -> Result<()> {
     let mut bodies = callback
         .result
         .context("compiler did not reach extraction")??;
+    let compiler = compiler_identity();
     let mut inputs = CompilerInputs {
         manifest_hash: String::new(),
         files: callback.capture.files(),
@@ -180,12 +191,11 @@ pub fn run(options: Options) -> Result<()> {
         target: TARGET.into(),
         panic_strategy: options.panic_strategy,
         mir_opt_level: 0,
-        rustc_args: args,
+        rustc_args: normalized_args(&args, &compiler)?,
         environment_policy: "empty".into(),
         trust: "trusted_local".into(),
         compiled_artifact: None,
     };
-    let compiler = compiler_identity();
     inputs.manifest_hash = sha256(&serde_json::to_vec(&(&compiler, PHASE, &inputs))?);
     let mut body_paths = std::collections::BTreeSet::new();
     for body in &mut bodies {
@@ -282,5 +292,28 @@ mod tests {
         assert_eq!(output.inner, b"ab");
         output.write_all(b"c").unwrap();
         assert_eq!(output.remaining, 0);
+    }
+
+    #[test]
+    fn equivalent_sysroot_install_locations_have_identical_logical_identity() {
+        let compiler = compiler_identity();
+        let args = |root: &str| {
+            vec![
+                "atlas-rustc".into(),
+                "./lib.rs".into(),
+                "--sysroot".into(),
+                root.into(),
+            ]
+        };
+        let first = normalized_args(&args("/home/first/toolchain"), &compiler).unwrap();
+        let second =
+            normalized_args(&args("/opt/toolchain-cache/same-compiler"), &compiler).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(
+            sha256(&serde_json::to_vec(&first).unwrap()),
+            sha256(&serde_json::to_vec(&second).unwrap())
+        );
+        assert!(first.last().unwrap().contains(&compiler.commit_hash));
+        assert!(!first.iter().any(|arg| arg.starts_with('/')));
     }
 }

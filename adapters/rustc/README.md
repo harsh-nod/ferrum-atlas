@@ -98,8 +98,11 @@ JSON fields. `CompilerBundle.schema_version` is `1`.
 
 - `compiler` records the exact compiler and adapter identity.
 - `inputs` records sorted captured file paths, raw-byte SHA-256 hashes and byte
-  lengths, crate root/name, edition, target, panic strategy, the exact rustc
-  argument vector, empty-environment policy, and `trusted_local` mode.
+  lengths, crate root/name, edition, target, panic strategy, the normalized rustc
+  argument vector, empty-environment policy, and `trusted_local`
+  mode. The recorded `--sysroot` value is `compiler:<commit>:<host>` rather than
+  its machine-local install path; execution still uses the actual embedded
+  sysroot. Source arguments have a `./` prefix to prevent option interpretation.
 - `inputs.compiled_artifact` is null because extraction does not produce an
   executable. Compiler input identity must not be confused with executable or
   trace provenance.
@@ -148,9 +151,9 @@ adapter does not promise a source-level async suspension graph.
 
 ## Qualification
 
-On 2026-09-15, the pinned Linux toolchain passed 5 adapter unit tests and 11
-compiler-process integration tests. The final measured run took 8.17 seconds of
-warm recompilation and 0.47 seconds of test execution; this is not a cold-build
+On 2026-09-15, the pinned Linux toolchain passed 6 adapter unit tests and 12
+compiler-process integration tests. The final measured run took 16.37 seconds of
+warm recompilation and 1.26 seconds of test execution; this is not a cold-build
 benchmark. Clippy was run for every adapter target with warnings denied.
 
 The fixture is hand-written, not derived from a compiler dump. Expectations cover
