@@ -1,9 +1,11 @@
 //! Deterministic, bounded interpretations over explicitly selected facts.
+mod compiler_complexity;
 mod dataflow;
 mod graph;
 mod maintainability;
 mod state_machine;
 mod trace;
+pub use compiler_complexity::*;
 pub use dataflow::*;
 pub use graph::*;
 pub use maintainability::*;
@@ -177,7 +179,11 @@ pub fn typescript() -> String {
         NestingSite,
         UnsafeBoundary,
         MetricUnknown,
-        SourceMaintainability
+        SourceMaintainability,
+        CompilerComplexityLimits,
+        CfgComplexityMetrics,
+        CfgExitSite,
+        CompilerComplexity
     );
     output
 }
