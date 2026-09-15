@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import struct
 import subprocess
 import sys
@@ -24,6 +25,14 @@ class ReleaseTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
+        # These are archive fixtures, not executable binaries. The real readelf
+        # path is exercised separately below without running its inspected input.
+        inspector = patch.object(release, "inspect_elf", return_value={
+            "tool": "system readelf", "interpreter": release.ELF_INTERPRETER,
+            "needed_libraries": ["libc.so.6"], "maximum_glibc_required": "2.34", "maximum_libgcc_required": None,
+        })
+        inspector.start()
+        self.addCleanup(inspector.stop)
         self.root = Path(self.temporary.name)
         self.repo = self.root / "repo"
         self.repo.mkdir()
@@ -273,6 +282,19 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "member exceeds budget"):
             release.validate(giant)
 
+    def test_hidden_extension_headers_are_rejected_before_their_body_parser_runs(self):
+        for kind, method in [(tarfile.XHDTYPE, "_proc_pax"), (tarfile.XGLTYPE, "_proc_pax"),
+                             (tarfile.GNUTYPE_LONGNAME, "_proc_gnulong"), (tarfile.GNUTYPE_LONGLINK, "_proc_gnulong"),
+                             (tarfile.GNUTYPE_SPARSE, "_proc_sparse")]:
+            archive = self.root / f"extension-{kind.hex()}.tar.gz"
+            header = tarfile.TarInfo("hidden-extension")
+            header.type, header.size = kind, release.MAX_TOTAL
+            with gzip.open(archive, "wb") as stream:
+                stream.write(header.tobuf(format=tarfile.USTAR_FORMAT))
+            with self.subTest(kind=kind), patch.object(tarfile.TarInfo, method, side_effect=AssertionError("extension body parser must never run")):
+                with self.assertRaisesRegex(ValueError, "extended headers"):
+                    release.validate(archive)
+
     def test_accumulation_budget_is_enforced_before_all_notices_are_loaded(self):
         with self.assertRaisesRegex(ValueError, "budget"):
             release.inventory(self.repo, self.args.cargo_metadata, self.args.npm_root, max_bytes=1)
@@ -328,6 +350,41 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "pin a GitHub source commit"):
             release.package(self.args)
 
+    def test_invalid_declared_identity_runtime_and_abi_are_rejected_when_resealed(self):
+        changes = [
+            (lambda value: value.update(source_commit="main"), "source commit"),
+            (lambda value: value.update(source_date_epoch=True), "timestamps"),
+            (lambda value: value.update(source_date_epoch=0), "timestamps"),
+            (lambda value: value["runtime_requirements"].update(glibc_minimum="2.17"), "runtime requirements"),
+            (lambda value: value["runtime_requirements"].update(procfs=1), "runtime requirements"),
+            (lambda value: value["build_inputs"].update(rust_toolchain="nightly"), "tool version"),
+            (lambda value: value["build_inputs"].update(cargo_lock_sha256="unknown"), "build-input digest"),
+            (lambda value: value["packaging_elf_inspection"].update(interpreter="/tmp/loader"), "ELF interpreter"),
+            (lambda value: value["packaging_elf_inspection"].update(needed_libraries=["libunreviewed.so"]), "ELF libraries"),
+            (lambda value: value["packaging_elf_inspection"].update(maximum_glibc_required="2.40"), "ELF glibc"),
+        ]
+        for index, (change, message) in enumerate(changes):
+            self.args.output = self.root / f"metadata-{index}"
+            def modify(members):
+                for offset, (member, data) in enumerate(members):
+                    if member.name.endswith("/RELEASE.json"):
+                        value = json.loads(data)
+                        change(value)
+                        members[offset] = (member, release.document(value))
+            with self.subTest(index=index), self.assertRaisesRegex(ValueError, message):
+                release.validate(self.altered(modify, reseal=True))
+
+    def test_original_v1_without_elf_record_is_structurally_valid_and_missing_docs_are_not(self):
+        def legacy(members):
+            for index, (member, data) in enumerate(members):
+                if member.name.endswith("/RELEASE.json"):
+                    value = json.loads(data)
+                    del value["packaging_elf_inspection"]
+                    members[index] = (member, release.document(value))
+        release.validate(self.altered(legacy, reseal=True))
+        self.args.output = self.root / "missing-docs"
+        with self.assertRaisesRegex(ValueError, "operation documentation"):
+            release.validate(self.altered(lambda members: members.__setitem__(slice(None), [item for item in members if not item[0].name.endswith("/docs/operations/install.md")]), reseal=True))
     def test_third_party_notices_are_included_but_license_update_source_is_not(self):
         self.write("dependency/THIRD-PARTY-LICENSE", "Third party licensing")
         self.write("dependency/ThirdPartyNotices.txt", "More copyright notices")
@@ -349,6 +406,37 @@ class CheckedInNoticeTests(unittest.TestCase):
                 data = release.read_regular(repo / "scripts" / item["path"], 1024 * 1024)
                 self.assertEqual(release.sha(data), item["sha256"])
         self.assertFalse(release.pinned_notice_url("https://raw.githubusercontent.com/o/r/" + "a" * 40 + "/../main/LICENSE"))
+
+
+class ELFInspectionTests(unittest.TestCase):
+    OUTPUT = """[Requesting program interpreter: /lib64/ld-linux-x86-64.so.2]
+ 0x0000000000000001 (NEEDED)             Shared library: [libgcc_s.so.1]
+ 0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]
+ 0x00a0: Name: GLIBC_2.2.5 Flags: none Version: 2
+ 0x00b0: Name: GLIBC_2.39 Flags: none Version: 3
+ 0x00c0: Name: GCC_4.2.0 Flags: none Version: 4
+"""
+
+    def test_inspector_rejects_unsupported_loader_dependencies_and_newer_glibc(self):
+        self.assertEqual(release.inspect_elf_output(self.OUTPUT)["maximum_glibc_required"], "2.39")
+        for output in [self.OUTPUT.replace("2.39", "2.40"), self.OUTPUT.replace("2.39", "PRIVATE"),
+                       self.OUTPUT.replace("4.2.0", "7.0.0"),
+                       self.OUTPUT.replace("libgcc_s.so.1", "libsurprise.so"), self.OUTPUT.replace(release.ELF_INTERPRETER, "/tmp/loader"),
+                       self.OUTPUT + "0x0 (RUNPATH) Library runpath: [/tmp]\n", "not an ELF report"]:
+            with self.subTest(output=output), self.assertRaises(ValueError):
+                release.inspect_elf_output(output)
+
+    @unittest.skipUnless(shutil.which("readelf") and Path("/bin/true").is_file(), "requires Linux binutils and an installed ELF fixture")
+    def test_system_readelf_inspects_bytes_without_executing_them(self):
+        result = release.inspect_elf(release.read_regular(Path("/bin/true"), release.MAX_BINARY))
+        self.assertEqual(result["interpreter"], release.ELF_INTERPRETER)
+        with self.assertRaisesRegex(ValueError, "readelf rejected"):
+            release.inspect_elf(b"not an executable")
+
+    def test_inspector_timeout_is_an_explicit_validation_error(self):
+        with patch.object(subprocess, "run", side_effect=subprocess.TimeoutExpired("readelf", 15)):
+            with self.assertRaisesRegex(ValueError, "time budget"):
+                release.inspect_elf(b"fixture")
 
 
 if __name__ == "__main__":

@@ -9,14 +9,19 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import re
+import resource
 import stat
 import struct
+import subprocess
 import tarfile
 import tempfile
 import tomllib
 from urllib.parse import urlsplit
 
 TARGET = "x86_64-unknown-linux-gnu"
+RUNTIME_REQUIREMENTS = {"os": "Linux", "architecture": "x86_64", "glibc_minimum": "2.39", "procfs": True}
+ELF_INTERPRETER = "/lib64/ld-linux-x86-64.so.2"
+ELF_LIBRARIES = {"libgcc_s.so.1", "libm.so.6", "libc.so.6", "ld-linux-x86-64.so.2"}
 MAX_TOTAL = 512 * 1024 * 1024
 MAX_BINARY = 256 * 1024 * 1024
 MAX_FILES = 8192
@@ -116,6 +121,53 @@ def elf(data):
     require(len(data) >= 64 and data[:6] == b"\x7fELF\x02\x01", "binary must be a little-endian ELF64 executable")
     kind, machine = struct.unpack_from("<HH", data, 16)
     require(kind in (2, 3) and machine == 62, "binary must target Linux x86_64")
+
+
+def inspect_elf_output(output):
+    interpreters = re.findall(r"\[Requesting program interpreter: ([^\]]+)\]", output)
+    require(interpreters == [ELF_INTERPRETER], "unsupported ELF interpreter or non-executable shared object")
+    libraries = sorted(set(re.findall(r"\(NEEDED\)\s+Shared library: \[([^\]]+)\]", output)))
+    require(libraries and set(libraries) <= ELF_LIBRARIES, "ELF needs an undeclared shared library")
+    require(not re.search(r"\((RPATH|RUNPATH)\)", output), "ELF runtime search paths are not supported")
+    versions = re.findall(r"Name:\s+(GLIBC_\S+)", output)
+    require(versions and all(re.fullmatch(r"GLIBC_[0-9]+(?:\.[0-9]+){1,2}", value) for value in versions), "ELF GLIBC version requirements are missing or unsupported")
+    maximum = max((tuple(map(int, value.removeprefix("GLIBC_").split("."))) for value in versions))
+    require(maximum <= (2, 39), "ELF requires a newer glibc than the declared minimum")
+    gcc_versions = re.findall(r"Name:\s+(GCC_\S+)", output)
+    require(all(re.fullmatch(r"GCC_[0-9]+(?:\.[0-9]+){1,2}", value) for value in gcc_versions), "unsupported ELF libgcc version requirement")
+    gcc_maximum = max((tuple(map(int, value.removeprefix("GCC_").split("."))) for value in gcc_versions), default=None)
+    require("libgcc_s.so.1" not in libraries or gcc_maximum is not None, "ELF libgcc symbol versions missing")
+    require(gcc_maximum is None or gcc_maximum <= (4, 2, 0), "ELF requires a newer libgcc than the declared runtime")
+    return {"tool": "system readelf", "interpreter": ELF_INTERPRETER, "needed_libraries": libraries,
+            "maximum_glibc_required": ".".join(map(str, maximum)),
+            "maximum_libgcc_required": ".".join(map(str, gcc_maximum)) if gcc_maximum is not None else None}
+
+
+def limit_elf_inspector():
+    # Inspect data, never execute the payload; bound even malformed ELF diagnostic output.
+    resource.setrlimit(resource.RLIMIT_AS, (512 * 1024 * 1024,) * 2)
+    resource.setrlimit(resource.RLIMIT_FSIZE, (4 * 1024 * 1024,) * 2)
+    resource.setrlimit(resource.RLIMIT_CPU, (10, 10))
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+
+
+def inspect_elf(data):
+    with tempfile.TemporaryFile() as binary, tempfile.TemporaryFile() as output:
+        binary.write(data)
+        binary.flush()
+        try:
+            completed = subprocess.run(
+                ["readelf", "--wide", "--program-headers", "--dynamic", "--version-info", f"/proc/self/fd/{binary.fileno()}"],
+                pass_fds=(binary.fileno(),), stdout=output, stderr=subprocess.STDOUT,
+                env={**os.environ, "LC_ALL": "C"}, timeout=15, preexec_fn=limit_elf_inspector,
+            )
+        except subprocess.TimeoutExpired as error:
+            raise ValueError("ELF inspection exceeded its time budget") from error
+        require(completed.returncode == 0, "system readelf rejected the ELF payload or exceeded its budget")
+        output.seek(0)
+        text = output.read(4 * 1024 * 1024 + 1)
+        require(len(text) <= 4 * 1024 * 1024, "ELF inspection output exceeds budget")
+        return inspect_elf_output(text.decode("utf-8"))
 
 
 def license_files(package, explicit=None, max_bytes=None):
@@ -269,6 +321,7 @@ def package(args):
     require(0 <= args.epoch <= 0xFFFFFFFF, "SOURCE_DATE_EPOCH must fit a gzip timestamp")
     binary = read_regular(args.binary, MAX_BINARY)
     elf(binary)
+    elf_requirements = inspect_elf(binary)
     files = Payloads()
     files["bin/atlas"] = binary
     files.update(web_files(args.web_dist, files.remaining))
@@ -289,7 +342,8 @@ def package(args):
         "format_version": 1, "product": "ferrum-atlas", "version": release_version,
         "source_commit": args.commit, "source_date_epoch": args.epoch, "target": TARGET,
         "qualification": "unqualified_prerelease", "deployment": "local_single_node",
-        "runtime_requirements": {"os": "Linux", "architecture": "x86_64", "glibc_minimum": "2.39", "procfs": True},
+        "runtime_requirements": RUNTIME_REQUIREMENTS,
+        "packaging_elf_inspection": elf_requirements,
         "build_inputs": {"rust_toolchain": toolchain, "node": "22.22.1", "npm": "11.16.0", "cargo_lock_sha256": sha(read_regular(repo / "Cargo.lock", 8 * 1024 * 1024)), "npm_lock_sha256": sha(read_regular(repo / "web/package-lock.json", 8 * 1024 * 1024)), "transport_types_sha256": sha(read_regular(repo / "web/src/api/types.ts", 4 * 1024 * 1024))},
         "not_included": ["source workspaces", "index stores", "tokens", "portable source exports", "rustc compiler adapter", "Rust/Node toolchains"],
         "limitations": ["No hosted/distributed support or L/S/O/X qualification claim.", "Checksums establish byte integrity, not producer authenticity or security certification.", "Archive bytes are deterministic for identical payloads and metadata; independent bit-reproducible compiler builds are not claimed."],
@@ -344,10 +398,19 @@ def allowed_member(name):
     return False
 
 
+class ReleaseTarInfo(tarfile.TarInfo):
+    def _proc_member(self, archive):
+        # Reject extension/sparse bodies before tarfile allocates or expands them.
+        # A check on yielded members is too late for hidden PAX/GNU headers.
+        require(self.type in (tarfile.REGTYPE, tarfile.AREGTYPE), "archive links, directories, special files and extended headers are forbidden")
+        require(0 <= self.size <= MAX_BINARY, "archive member exceeds budget")
+        return super()._proc_member(archive)
+
+
 def validate(archive):
     hashes, sizes, documents = {}, {}, {}
-    prefix, total = None, 0
-    with regular_stream(archive, MAX_TOTAL) as source, tarfile.open(fileobj=source, mode="r|gz") as tar:
+    prefix, total, mtimes = None, 0, set()
+    with regular_stream(archive, MAX_TOTAL) as source, tarfile.open(fileobj=source, mode="r|gz", tarinfo=ReleaseTarInfo) as tar:
         for member in tar:
             require(len(hashes) < MAX_FILES + 2, "archive file count exceeds budget")
             require(member.isfile() and not member.pax_headers, "archive links, directories, special files and extended headers are forbidden")
@@ -360,6 +423,7 @@ def validate(archive):
             total += member.size
             require(total <= MAX_TOTAL, "archive uncompressed bytes exceed budget")
             require(member.mode == (0o755 if name == "bin/atlas" else 0o644) and member.uid == 0 and member.gid == 0, "unexpected archive ownership or mode")
+            mtimes.add(member.mtime)
             stream = tar.extractfile(member)
             digest = hashlib.sha256()
             collected = bytearray()
@@ -381,6 +445,28 @@ def validate(archive):
     require(VERSION.fullmatch(manifest.get("version", "")), "archive is not a supported prerelease")
     require(prefix == f"ferrum-atlas-{manifest['version']}-{TARGET}", "archive root/version mismatch")
     require(manifest.get("qualification") == "unqualified_prerelease" and manifest.get("deployment") == "local_single_node", "unsupported release claim")
+    require(isinstance(manifest.get("source_commit"), str) and re.fullmatch(r"[0-9a-f]{40}", manifest["source_commit"]), "invalid declared source commit")
+    epoch = manifest.get("source_date_epoch")
+    require(type(epoch) is int and 0 <= epoch <= 0xFFFFFFFF and mtimes == {epoch}, "archive timestamps differ from declared source epoch")
+    require(manifest.get("runtime_requirements") == RUNTIME_REQUIREMENTS and type(manifest["runtime_requirements"].get("procfs")) is bool, "unsupported declared runtime requirements")
+    inputs = manifest.get("build_inputs")
+    require(isinstance(inputs, dict) and set(inputs) == {"rust_toolchain", "node", "npm", "cargo_lock_sha256", "npm_lock_sha256", "transport_types_sha256"}, "invalid declared build inputs")
+    for key in ("rust_toolchain", "node", "npm"):
+        require(isinstance(inputs[key], str) and re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", inputs[key]), "invalid declared tool version")
+    for key in ("cargo_lock_sha256", "npm_lock_sha256", "transport_types_sha256"):
+        require(isinstance(inputs[key], str) and re.fullmatch(r"[0-9a-f]{64}", inputs[key]), "invalid declared build-input digest")
+    # Older v1 packages omit this record. For either form, archive validation is
+    # structural: a declaration is not proof of ABI, build origin or authenticity.
+    if "packaging_elf_inspection" in manifest:
+        inspection = manifest["packaging_elf_inspection"]
+        require(isinstance(inspection, dict) and set(inspection) == {"tool", "interpreter", "needed_libraries", "maximum_glibc_required", "maximum_libgcc_required"}, "invalid declared ELF inspection")
+        require(inspection["tool"] == "system readelf" and inspection["interpreter"] == ELF_INTERPRETER, "unsupported declared ELF interpreter")
+        libraries = inspection["needed_libraries"]
+        require(isinstance(libraries, list) and libraries and all(isinstance(value, str) for value in libraries) and libraries == sorted(set(libraries)) and set(libraries) <= ELF_LIBRARIES, "unsupported declared ELF libraries")
+        minimum = inspection["maximum_glibc_required"]
+        require(isinstance(minimum, str) and re.fullmatch(r"[0-9]+\.[0-9]+(?:\.[0-9]+)?", minimum) and tuple(map(int, minimum.split("."))) <= (2, 39), "unsupported declared ELF glibc requirement")
+        gcc = inspection["maximum_libgcc_required"]
+        require((gcc is None and "libgcc_s.so.1" not in libraries) or (isinstance(gcc, str) and re.fullmatch(r"[0-9]+\.[0-9]+(?:\.[0-9]+)?", gcc) and tuple(map(int, gcc.split("."))) <= (4, 2, 0)), "unsupported declared ELF libgcc requirement")
     expected = manifest["files"]
     require(set(expected) == set(hashes) - {"RELEASE.json", "SHA256SUMS"}, "manifest file set mismatch")
     for name, details in expected.items():
@@ -390,6 +476,7 @@ def validate(archive):
     require(lines == expected_lines, "internal checksum list mismatch")
     required = {"bin/atlas", "share/ferrum-atlas/web/index.html", "share/ferrum-atlas/schema-compatibility.json", "share/ferrum-atlas/dependency-inventory.json", "share/licenses/ferrum-atlas/LICENSE-MIT", "share/licenses/ferrum-atlas/LICENSE-APACHE"}
     require(required <= hashes.keys(), "required release payload missing")
+    require(set(DOCS) <= hashes.keys(), "required operation documentation missing")
     require(any(name.startswith("share/ferrum-atlas/web/") and name.endswith(".js") for name in hashes), "viewer JavaScript missing")
     require(any(name.startswith("share/ferrum-atlas/web/") and name.endswith(".css") for name in hashes), "viewer stylesheet missing")
     schema = json.loads(documents["share/ferrum-atlas/schema-compatibility.json"])
@@ -435,7 +522,7 @@ def main():
         elif args.command == "package": print(package(args))
         else:
             manifest = validate(args.archive)
-            print(f"Validated Ferrum Atlas {manifest['version']}: {len(manifest['files'])} files; unqualified local prerelease")
+            print(f"Validated Ferrum Atlas {manifest['version']}: {len(manifest['files'])} files; unqualified local prerelease; structural validation only, ABI and origin declarations unverified")
     except (OSError, ValueError, KeyError, TypeError, tarfile.TarError) as error:
         parser.exit(1, f"release validation failed: {error}\n")
 

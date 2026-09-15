@@ -8,6 +8,10 @@ limitations and draft assets before making a prerelease public.
 ## Supported Machine
 
 - Linux x86_64 with glibc 2.39 or newer and mounted `/proc`.
+- The GNU loader at `/lib64/ld-linux-x86-64.so.2`, `libc.so.6`, `libm.so.6`,
+  and `libgcc_s.so.1` (including the `GCC_4.2.0` symbol version). These are
+  present on standard Ubuntu 24.04 installations; a minimal or non-FHS Linux
+  image may lack them even when a compatible glibc is installed elsewhere.
 - A local filesystem for the store, not a shared NFS SQLite catalog.
 - A current browser. Rust, Cargo, Node and npm are not needed to browse or import
   an exported index, or to perform read-only source indexing with the binary.
@@ -49,7 +53,11 @@ python3 scripts/release.py validate "$ARCHIVE"
 The validator rejects unexpected files, duplicate/traversing paths, links,
 special files, missing components, mismatched hashes, incompatible metadata,
 incorrect modes and oversized archives. It does not inspect machine-code
-behavior or establish complete license compliance.
+behavior or establish complete license compliance. Runtime/build metadata is
+checked structurally, not authenticated. A resealed package can still lie about
+its origin or contents. The validator does not re-run ELF ABI inspection and
+does not execute the packaged program. Original version-1 packages without a
+`packaging_elf_inspection` record remain structurally readable.
 
 ## Install and Open
 
@@ -136,7 +144,7 @@ store path.
 
 ## Rebuild the Package
 
-Maintainers need Python 3.11+, the repository's `rust-toolchain.toml` pin
+Maintainers need Python 3.11+, GNU binutils `readelf`, the repository's `rust-toolchain.toml` pin
 (currently 1.97.1), Node 22.22.1, and npm 11.16.0. Build only this trusted project,
 from a reviewed clean commit on Ubuntu 24.04. `npm ci` and Cargo build scripts
 execute dependency/build code; they are not part of read-only analyzed-project
@@ -172,7 +180,13 @@ Packages that omit license text use only the explicitly versioned supplements in
 notice bytes. Their exact source URLs, hashes and provenance limitations are
 carried into the inventory. Missing unreviewed notices still block packaging;
 supplementation is not approval of source-offer or distribution obligations.
-Packaging never runs the binary. Repeating packaging with identical payloads,
+Packaging never runs the binary. It passes a descriptor for the exact selected
+bytes to system `readelf`, with 15-second wall, 10-second CPU, 512 MiB address-space
+and 4 MiB diagnostic-output limits. The result records the interpreter, needed
+libraries and maximum GLIBC/libgcc symbol versions; unsupported loaders,
+undeclared libraries, runtime search paths and requirements above GLIBC 2.39
+or GCC 4.2.0 reject packaging. This is
+not a full ELF correctness or security audit. Repeating packaging with identical payloads,
 commit, version and epoch yields identical tar/gzip bytes; independently
 bit-reproducible Rust/linker builds have not been demonstrated.
 
@@ -183,3 +197,29 @@ always marked prerelease and not latest. The workflow never promotes a draft or
 makes a qualified, hosted, or distributed release claim. Review the packaged
 dependency inventory and notice texts, including source-availability obligations
 and bundled/native/toolchain components, before public distribution.
+
+## Unpassed Distribution Gates
+
+The successful package workflow and runtime smoke tests do not close these
+concrete licensing/distribution review gaps:
+
+- The bundled `elkjs` 0.12.0 worker is generated JavaScript. The package includes
+  EPL-2.0 text, but does not yet provide an accompanying preferred-source
+  availability statement and verified retrieval/build mapping for that worker.
+  Its installed metadata identifies [kieler/elkjs](https://github.com/kieler/elkjs),
+  whose build also requires the matching Eclipse ELK Java sources. A repository
+  name or npm version alone does not establish that complete mapping.
+  [EPL-2.0 section 3.1](https://www.eclipse.org/org/documents/epl-2.0/EPL-2.0.txt) describes
+  the source-availability and recipient-information requirement. Maintainer and
+  independent licensing review remain required before further distribution;
+  these notes are not a source offer or legal compliance determination.
+- Cargo dependency notices do not inventory the statically linked Rust standard
+  library, `compiler_builtins`, or every component supplied by the pinned Rust
+  sysroot/linker. The supplemental rustc-package notices are not a verified
+  inventory of the Rust 1.97.1 toolchain-linked runtime. Its applicable license,
+  attribution and source-availability materials still require separate review.
+
+Do not interpret a validated archive, publicly available workflow artifact,
+draft prerelease or executed smoke test as approval to distribute under any
+particular license. No authenticity, signing or independent build-reproduction
+assurance is supplied by these checks.
