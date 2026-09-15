@@ -14,6 +14,7 @@ import { useResource } from "../state";
 import { CoverageNotice, ErrorNotice, IconButton, Loading } from "./common";
 import { DataflowView } from "./DataflowView";
 import { CompilerSourceLink } from "./CompilerSourceLink";
+import { CompilerComplexityView } from "./CompilerComplexityView";
 
 function effects(value: CompilerLocalEffects) {
   return (
@@ -274,6 +275,16 @@ export function CompilerFlowView({
               <ArrowRight size={15} />
             </IconButton>
           </div>
+          {definition && (
+            <CompilerComplexityView
+              snapshot={snapshot}
+              definition={definition}
+              importId={importId}
+              flow={page.data}
+              source={source.data}
+              onSpan={onSpan}
+            />
+          )}
           {definition && (
             <DataflowView
               snapshot={snapshot}
