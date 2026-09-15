@@ -1,0 +1,179 @@
+{
+  "format_version": 1,
+  "review_status": "Supplemental notice text acquisition only. Source-availability, bundled-native/toolchain, compatibility and distribution review remain mandatory before public release.",
+  "groups": [
+    {
+      "packages": [
+        "cargo:ra_ap_base_db@0.0.349",
+        "cargo:ra_ap_cfg@0.0.349",
+        "cargo:ra_ap_edition@0.0.349",
+        "cargo:ra_ap_hir@0.0.349",
+        "cargo:ra_ap_hir_def@0.0.349",
+        "cargo:ra_ap_hir_expand@0.0.349",
+        "cargo:ra_ap_hir_ty@0.0.349",
+        "cargo:ra_ap_ide_db@0.0.349",
+        "cargo:ra_ap_intern@0.0.349",
+        "cargo:ra_ap_macros@0.0.349",
+        "cargo:ra_ap_mbe@0.0.349",
+        "cargo:ra_ap_parser@0.0.349",
+        "cargo:ra_ap_paths@0.0.349",
+        "cargo:ra_ap_profile@0.0.349",
+        "cargo:ra_ap_span@0.0.349",
+        "cargo:ra_ap_stdx@0.0.349",
+        "cargo:ra_ap_syntax-bridge@0.0.349",
+        "cargo:ra_ap_syntax@0.0.349",
+        "cargo:ra_ap_test_fixture@0.0.349",
+        "cargo:ra_ap_test_utils@0.0.349",
+        "cargo:ra_ap_tt@0.0.349",
+        "cargo:ra_ap_vfs@0.0.349"
+      ],
+      "provenance": "Repository root license texts at the VCS revision recorded by ra_ap_base_db 0.0.349; publishing metadata reports a dirty working tree, so this is not a source authenticity assertion.",
+      "files": [
+        {
+          "path": "release-notices/rust-analyzer/LICENSE-APACHE",
+          "url": "https://raw.githubusercontent.com/rust-lang/rust-analyzer/5c156cdfb047ea171ba255dcdcd86236d98a389e/LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+          "archive_name": "LICENSE-APACHE"
+        },
+        {
+          "path": "release-notices/rust-analyzer/LICENSE-MIT",
+          "url": "https://raw.githubusercontent.com/rust-lang/rust-analyzer/5c156cdfb047ea171ba255dcdcd86236d98a389e/LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "archive_name": "LICENSE-MIT"
+        }
+      ]
+    },
+    {
+      "packages": [
+        "cargo:la-arena@0.3.1",
+        "cargo:line-index@0.1.2"
+      ],
+      "provenance": "Cargo metadata declares MIT OR Apache-2.0 and points to rust-analyzer. These legacy packages omit exact VCS provenance; repository root license texts are pinned to the selected rust-analyzer revision for explicit maintainer review.",
+      "files": [
+        {
+          "path": "release-notices/rust-analyzer/LICENSE-APACHE",
+          "url": "https://raw.githubusercontent.com/rust-lang/rust-analyzer/5c156cdfb047ea171ba255dcdcd86236d98a389e/LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+          "archive_name": "LICENSE-APACHE"
+        },
+        {
+          "path": "release-notices/rust-analyzer/LICENSE-MIT",
+          "url": "https://raw.githubusercontent.com/rust-lang/rust-analyzer/5c156cdfb047ea171ba255dcdcd86236d98a389e/LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "archive_name": "LICENSE-MIT"
+        }
+      ]
+    },
+    {
+      "packages": [
+        "cargo:ra-ap-rustc_abi@0.166.0",
+        "cargo:ra-ap-rustc_ast_ir@0.166.0",
+        "cargo:ra-ap-rustc_hashes@0.166.0",
+        "cargo:ra-ap-rustc_index@0.166.0",
+        "cargo:ra-ap-rustc_index_macros@0.166.0",
+        "cargo:ra-ap-rustc_lexer@0.166.0",
+        "cargo:ra-ap-rustc_next_trait_solver@0.166.0",
+        "cargo:ra-ap-rustc_parse_format@0.166.0",
+        "cargo:ra-ap-rustc_pattern_analysis@0.166.0",
+        "cargo:ra-ap-rustc_type_ir@0.166.0",
+        "cargo:ra-ap-rustc_type_ir_macros@0.166.0"
+      ],
+      "provenance": "Each Cargo package description names rust-lang/rust source commit ce89c898570852a1bb441d77570596e50bf362c2. Root license and copyright notices were retrieved from that exact commit.",
+      "files": [
+        {
+          "path": "release-notices/rust/LICENSE-APACHE",
+          "url": "https://raw.githubusercontent.com/rust-lang/rust/ce89c898570852a1bb441d77570596e50bf362c2/LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+          "archive_name": "LICENSE-APACHE"
+        },
+        {
+          "path": "release-notices/rust/LICENSE-MIT",
+          "url": "https://raw.githubusercontent.com/rust-lang/rust/ce89c898570852a1bb441d77570596e50bf362c2/LICENSE-MIT",
+          "sha256": "b71bd43a069ca0641a9ecfe585ca7b3c53b5cc1608f8b68321168698e28b5ea1",
+          "archive_name": "LICENSE-MIT"
+        },
+        {
+          "path": "release-notices/rust/COPYRIGHT",
+          "url": "https://raw.githubusercontent.com/rust-lang/rust/ce89c898570852a1bb441d77570596e50bf362c2/COPYRIGHT",
+          "sha256": "172020dbfd5b53a226dfde77616190a48dcff519b0bc0e6deb91a8450782c4af",
+          "archive_name": "COPYRIGHT"
+        }
+      ]
+    },
+    {
+      "packages": [
+        "cargo:perf-event@0.4.8"
+      ],
+      "provenance": "Exact .cargo_vcs_info.json revision; repository root licensing texts.",
+      "files": [
+        {
+          "path": "release-notices/perf-event/LICENSE-APACHE",
+          "url": "https://raw.githubusercontent.com/jimblandy/perf-event/fdfcd6eab9de3e40b2ecbcc01a1be3b1bd15405b/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "archive_name": "LICENSE-APACHE"
+        },
+        {
+          "path": "release-notices/perf-event/LICENSE-MIT",
+          "url": "https://raw.githubusercontent.com/jimblandy/perf-event/fdfcd6eab9de3e40b2ecbcc01a1be3b1bd15405b/LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "archive_name": "LICENSE-MIT"
+        }
+      ]
+    },
+    {
+      "packages": [
+        "cargo:perf-event-open-sys@4.0.0"
+      ],
+      "provenance": "Exact .cargo_vcs_info.json revision in the consolidated jimblandy/perf-event repository. Declared repository metadata points to the older repository path.",
+      "files": [
+        {
+          "path": "release-notices/perf-event/LICENSE-APACHE",
+          "url": "https://raw.githubusercontent.com/jimblandy/perf-event/3aecf09156daa67b5579cc7742168cc95dcbe063/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "archive_name": "LICENSE-APACHE"
+        },
+        {
+          "path": "release-notices/perf-event/LICENSE-MIT",
+          "url": "https://raw.githubusercontent.com/jimblandy/perf-event/3aecf09156daa67b5579cc7742168cc95dcbe063/LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "archive_name": "LICENSE-MIT"
+        }
+      ]
+    },
+    {
+      "packages": [
+        "cargo:ts-rs@11.1.0",
+        "cargo:ts-rs-macros@11.1.0"
+      ],
+      "provenance": "Exact ts-rs 11.1.0 .cargo_vcs_info.json revision; repository MIT licensing text.",
+      "files": [
+        {
+          "path": "release-notices/ts-rs/LICENSE",
+          "url": "https://raw.githubusercontent.com/Aleph-Alpha/ts-rs/1dce5297090804082e9639d2b7d851ba815aa359/LICENSE",
+          "sha256": "db7f7f8e7236a2d0b41b855b2501b7b913caebbcda6ce498637a304ad1706ce1",
+          "archive_name": "LICENSE"
+        }
+      ]
+    },
+    {
+      "packages": [
+        "npm:node_modules/@rolldown/binding-linux-x64-gnu@1.2.8"
+      ],
+      "provenance": "Rolldown v1.2.8 tag resolved to immutable commit 9704b565076baf57b3703c98ebde973855506a68. The native package omits license texts; these are the matching repository license and third-party notices. Build-tool scope does not establish native source-offer compliance.",
+      "files": [
+        {
+          "path": "release-notices/rolldown/LICENSE",
+          "url": "https://raw.githubusercontent.com/rolldown/rolldown/9704b565076baf57b3703c98ebde973855506a68/LICENSE",
+          "sha256": "23ecfff35a5a2e80d92142f75228912c3b1abc4b5a8337a821ff4397e2f9f734",
+          "archive_name": "LICENSE"
+        },
+        {
+          "path": "release-notices/rolldown/THIRD-PARTY-LICENSE",
+          "url": "https://raw.githubusercontent.com/rolldown/rolldown/9704b565076baf57b3703c98ebde973855506a68/THIRD-PARTY-LICENSE",
+          "sha256": "a877291d800ed43692f3f9ae09d8e01cc6f7293ad39d43896059c188ffbb8b7c",
+          "archive_name": "THIRD-PARTY-LICENSE"
+        }
+      ]
+    }
+  ]
+}

@@ -162,6 +162,33 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "npm version"):
             release.package(self.args)
 
+    def test_archive_input_rejects_links_fifos_and_directories(self):
+        archive = release.package(self.args)
+        link = self.root / "link.tar.gz"
+        link.symlink_to(archive)
+        with self.assertRaises(OSError):
+            release.validate(link)
+        with self.assertRaises((ValueError, OSError)):
+            release.validate(self.root)
+        fifo = self.root / "pipe.tar.gz"
+        os.mkfifo(fifo)
+        process = subprocess.run([sys.executable, str(SCRIPT), "validate", str(fifo)], capture_output=True, text=True, timeout=2)
+        self.assertNotEqual(process.returncode, 0)
+        self.assertIn("not a regular file", process.stderr)
+
+    def test_empty_notice_text_is_rejected_when_packaged_or_resealed(self):
+        self.write("dependency/LICENSE-MIT", " \n\t")
+        with self.assertRaisesRegex(ValueError, "empty dependency notice"):
+            release.package(self.args)
+        self.write("dependency/LICENSE-MIT", "Restored notice")
+        def empty(members):
+            for index, (member, _) in enumerate(members):
+                if member.name.endswith("/dependency-1.0.0/LICENSE-MIT"):
+                    members[index] = (member, b"")
+        archive = self.altered(empty, reseal=True)
+        with self.assertRaisesRegex(ValueError, "empty dependency notice"):
+            release.validate(archive)
+
     def test_required_missing_npm_package_and_license_escape_are_rejected(self):
         self.metadata["packages"][1]["license_file"] = "../../secret"
         self.write("metadata.json", json.dumps(self.metadata))
@@ -236,7 +263,7 @@ class ReleaseTests(unittest.TestCase):
         archive = release.package(self.args)
         with patch.object(release, "MAX_FILES", 1), self.assertRaisesRegex(ValueError, "file count"):
             release.validate(archive)
-        with patch.object(release, "MAX_TOTAL", 16), self.assertRaisesRegex(ValueError, "compressed archive"):
+        with patch.object(release, "MAX_TOTAL", 16), self.assertRaisesRegex(ValueError, "exceeds budget"):
             release.validate(archive)
         giant = self.root / "giant.tar.gz"
         header = tarfile.TarInfo("ferrum-atlas-0.1.0-alpha.1-x86_64-unknown-linux-gnu/bin/atlas")
@@ -272,6 +299,56 @@ class ReleaseTests(unittest.TestCase):
             archive = self.altered(lambda members: members.__setitem__(slice(None), [item for item in members if not item[0].name.endswith(extension)]), reseal=True)
             with self.assertRaisesRegex(ValueError, reason):
                 release.validate(archive)
+
+    def supplemental(self):
+        data = b"Pinned upstream MIT license fixture\n"
+        self.write("scripts/release-notices/dependency/LICENSE", data)
+        value = {"format_version": 1, "groups": [{"packages": ["cargo:dependency@1.0.0"], "provenance": "Exact upstream fixture commit", "files": [{"path": "release-notices/dependency/LICENSE", "archive_name": "LICENSE", "url": "https://raw.githubusercontent.com/owner/project/" + "b" * 40 + "/LICENSE", "sha256": release.sha(data)}]}]}
+        self.write("scripts/release-notices.json", json.dumps(value))
+        (self.repo / "dependency/LICENSE-MIT").unlink()
+        return value
+
+    def test_supplemental_notices_are_pinned_checksummed_and_carried_into_inventory(self):
+        self.supplemental()
+        archive = release.package(self.args)
+        release.validate(archive)
+        data = {member.name.partition("/")[2]: value for member, value in self.members(archive)}
+        inventory = json.loads(data["share/ferrum-atlas/dependency-inventory.json"])
+        source = inventory["packages"][0]["supplemental_notice_provenance"][0]
+        self.assertIn("b" * 40, source["url"])
+        self.assertEqual(source["sha256"], release.sha(data[inventory["packages"][0]["notices"][0]]))
+
+    def test_supplemental_notice_corruption_and_moving_branch_urls_are_rejected(self):
+        value = self.supplemental()
+        self.write("scripts/release-notices/dependency/LICENSE", "changed")
+        with self.assertRaisesRegex(ValueError, "notice checksum"):
+            release.package(self.args)
+        value["groups"][0]["files"][0]["url"] = "https://raw.githubusercontent.com/owner/project/main/LICENSE"
+        self.write("scripts/release-notices.json", json.dumps(value))
+        with self.assertRaisesRegex(ValueError, "pin a GitHub source commit"):
+            release.package(self.args)
+
+    def test_third_party_notices_are_included_but_license_update_source_is_not(self):
+        self.write("dependency/THIRD-PARTY-LICENSE", "Third party licensing")
+        self.write("dependency/ThirdPartyNotices.txt", "More copyright notices")
+        self.write("dependency/license-update.mjs", "SECRET_BUILD_SCRIPT")
+        files = release.license_files(self.repo / "dependency")
+        self.assertIn("THIRD-PARTY-LICENSE", files)
+        self.assertIn("ThirdPartyNotices.txt", files)
+        self.assertNotIn("license-update.mjs", files)
+
+
+class CheckedInNoticeTests(unittest.TestCase):
+    def test_every_checked_in_supplement_has_exact_pinned_source_metadata_and_bytes(self):
+        repo = SCRIPT.parent.parent
+        overrides = release.supplemental_notices(repo)
+        self.assertEqual(len(overrides), 40)
+        for group in overrides.values():
+            for item in group["files"]:
+                self.assertTrue(release.pinned_notice_url(item["url"]))
+                data = release.read_regular(repo / "scripts" / item["path"], 1024 * 1024)
+                self.assertEqual(release.sha(data), item["sha256"])
+        self.assertFalse(release.pinned_notice_url("https://raw.githubusercontent.com/o/r/" + "a" * 40 + "/../main/LICENSE"))
 
 
 if __name__ == "__main__":

@@ -120,6 +120,8 @@ timeouts or crashes retain the last valid head. Investigate partial coverage and
 recorded failure reasons before retrying; do not delete the store to clear a
 transient worker error. See [local operations](local.md),
 [compiler and jobs](compiler-and-jobs.md), and [retention](retention.md).
+Opt-in state-machine annotations and their limitations are documented in
+[state machines](state-machines.md).
 
 ## Remove Safely
 
@@ -165,6 +167,11 @@ Only explicit binaries, `web/dist/index.html`, allowlisted `web/dist/assets`
 files, operation documents, compatibility metadata, project licenses and
 dependency notices enter the archive. Source maps, stores, tokens, source
 exports, arbitrary public files and symlinks are rejected or never traversed.
+Packages that omit license text use only the explicitly versioned supplements in
+`scripts/release-notices.json`, verified against checked-in immutable upstream
+notice bytes. Their exact source URLs, hashes and provenance limitations are
+carried into the inventory. Missing unreviewed notices still block packaging;
+supplementation is not approval of source-offer or distribution obligations.
 Packaging never runs the binary. Repeating packaging with identical payloads,
 commit, version and epoch yields identical tar/gzip bytes; independently
 bit-reproducible Rust/linker builds have not been demonstrated.

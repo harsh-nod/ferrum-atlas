@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Package explicit, prebuilt local artifacts; never walk a source/store tree."""
 import argparse
+from contextlib import contextmanager
 import gzip
 import hashlib
 import io
@@ -13,6 +14,7 @@ import struct
 import tarfile
 import tempfile
 import tomllib
+from urllib.parse import urlsplit
 
 TARGET = "x86_64-unknown-linux-gnu"
 MAX_TOTAL = 512 * 1024 * 1024
@@ -22,9 +24,12 @@ DOCS = (
     "docs/operations/install.md", "docs/operations/local.md",
     "docs/operations/portable-snapshots.md", "docs/operations/retention.md",
     "docs/operations/compiler-and-jobs.md", "docs/dependencies.md",
+    "docs/operations/state-machines.md",
 )
 VERSION = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-(alpha|beta|rc|preview)\.(0|[1-9][0-9]*)")
-LICENSE_NAME = re.compile(r"^(licen[sc]es?|copying|copyright|notice|unlicense)([-_.].*)?$", re.I)
+LICENSE_NAME = re.compile(r"^(third[-_ ]?party[-_ ]?)?(licen[sc]es?|copying|copyright|notices?(text)?|unlicense)([-_.].*)?$", re.I)
+NOTICE_SUFFIXES = {"", ".txt", ".md", ".rst", ".html", ".apache", ".mit", ".bsd", ".lesser", ".gpl", ".lgpl", ".0"}
+PINNED_NOTICE_URL = re.compile(r"https://raw\.githubusercontent\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/[0-9a-f]{40}/[A-Za-z0-9_./-]+")
 ASSET = re.compile(r"assets/[A-Za-z0-9][A-Za-z0-9_.-]*\.(js|css|svg|png|jpg|jpeg|webp|avif|ico|woff|woff2|wasm)")
 
 
@@ -33,12 +38,18 @@ def require(condition, message):
         raise ValueError(message)
 
 
-def read_regular(path, maximum):
+@contextmanager
+def regular_stream(path, maximum):
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
     with os.fdopen(fd, "rb") as stream:
         info = os.fstat(stream.fileno())
         require(stat.S_ISREG(info.st_mode), f"not a regular file: {path}")
         require(info.st_size <= maximum, f"file exceeds budget: {path}")
+        yield stream
+
+
+def read_regular(path, maximum):
+    with regular_stream(path, maximum) as stream:
         data = stream.read(maximum + 1)
         require(len(data) <= maximum, f"file grew beyond budget: {path}")
         return data
@@ -73,12 +84,22 @@ class Payloads(dict):
             self[name] = data
 
 
+class MissingNotice(ValueError):
+    pass
+
+
 def safe_relative(value):
     path = PurePosixPath(value)
     return (isinstance(value, str) and value and len(value) <= 240
             and not path.is_absolute() and "\\" not in value
             and all(part not in ("", ".", "..") for part in value.split("/"))
             and all(32 < ord(char) < 127 for char in value))
+
+
+def pinned_notice_url(value):
+    return (isinstance(value, str) and len(value) <= 2048
+            and PINNED_NOTICE_URL.fullmatch(value)
+            and safe_relative("/".join(urlsplit(value).path.split("/")[4:])))
 
 
 def version(repo, supplied):
@@ -103,25 +124,67 @@ def license_files(package, explicit=None, max_bytes=None):
     with os.scandir(package) as entries:
         for count, entry in enumerate(entries, 1):
             require(count <= 1024, "dependency root entry budget exceeded")
-            if LICENSE_NAME.fullmatch(entry.name):
+            if LICENSE_NAME.fullmatch(entry.name) and Path(entry.name).suffix.lower() in NOTICE_SUFFIXES:
                 if entry.is_dir(follow_symlinks=False):
                     with os.scandir(entry.path) as children:
                         for child_count, child in enumerate(children, 1):
                             require(child_count <= 128, "license directory budget exceeded")
-                            if child.is_file(follow_symlinks=False):
+                            if child.is_file(follow_symlinks=False) and Path(child.name).suffix.lower() in NOTICE_SUFFIXES:
                                 candidates.add(Path(entry.name) / child.name)
                 else:
                     candidates.add(Path(entry.name))
     if explicit:
         require(safe_relative(explicit), "license_file must be package-relative")
         candidates.add(Path(explicit))
-    require(candidates, f"no distributed license/notice text found for {package.name}; review before packaging")
+    if not candidates:
+        raise MissingNotice(f"no distributed license/notice text found for {package.name}; review before packaging")
     result = Payloads(max_bytes)
     for relative in sorted(candidates):
         require(safe_relative(relative.as_posix()), "unsupported license filename")
         require(not any(part.is_symlink() for part in (package / relative).parents if part != package.parent), "symlink license parent")
-        result[relative.as_posix()] = read_regular(package / relative, min(1024 * 1024, result.remaining))
+        data = read_regular(package / relative, min(1024 * 1024, result.remaining))
+        require(data.strip(), "empty dependency notice text")
+        result[relative.as_posix()] = data
     return result
+
+
+def supplemental_notices(repo):
+    path = repo / "scripts/release-notices.json"
+    if not path.exists():
+        return {}
+    value = json.loads(read_regular(path, 1024 * 1024))
+    require(value.get("format_version") == 1 and len(value["groups"]) <= 64, "unsupported supplemental notice manifest")
+    result = {}
+    for group in value["groups"]:
+        require(1 <= len(group["files"]) <= 32 and len(group["packages"]) <= 1024, "supplemental notice count exceeds budget")
+        require(isinstance(group.get("provenance"), str) and len(group["provenance"]) <= 2048, "supplemental provenance exceeds budget")
+        for item in group["files"]:
+            require(pinned_notice_url(item["url"]), "supplemental notice URL must pin a GitHub source commit")
+            require(safe_relative(item["path"]) and item["path"].startswith("release-notices/") and safe_relative(item["archive_name"]), "invalid supplemental notice path")
+            require(re.fullmatch(r"[0-9a-f]{64}", item["sha256"]), "invalid supplemental notice digest")
+        for name in group["packages"]:
+            require(name not in result, "duplicate supplemental package identity")
+            result[name] = group
+    return result
+
+
+def dependency_notices(repo, package, identity, overrides, remaining, explicit=None):
+    try:
+        return license_files(package, explicit, remaining), []
+    except MissingNotice:
+        group = overrides.get(identity)
+        if group is None:
+            raise
+    files, provenance = Payloads(remaining), []
+    for item in group["files"]:
+        path = repo / "scripts" / item["path"]
+        require(not any(parent.is_symlink() for parent in path.parents), "symlink supplemental notice parent")
+        data = read_regular(path, min(1024 * 1024, files.remaining))
+        require(data.strip(), "empty supplemental notice text")
+        require(sha(data) == item["sha256"], "supplemental notice checksum mismatch")
+        files[item["archive_name"]] = data
+        provenance.append({"url": item["url"], "sha256": item["sha256"], "notice_name": item["archive_name"], "mapping_basis": group["provenance"]})
+    return files, provenance
 
 
 def inventory(repo, metadata_path, npm_root, max_bytes=None):
@@ -133,6 +196,7 @@ def inventory(repo, metadata_path, npm_root, max_bytes=None):
     require(lock.get("lockfileVersion") == 3 and isinstance(lock.get("packages"), dict), "npm lockfile version 3 required")
     require(len(metadata["packages"]) <= 1024 and len(lock["packages"]) <= 2048, "dependency count exceeds budget")
     members = set(metadata["workspace_members"])
+    overrides = supplemental_notices(repo)
     notices, packages = Payloads(max_bytes), []
     for package in sorted(metadata["packages"], key=lambda item: (item["name"], item["version"])):
         if package["id"] in members:
@@ -142,14 +206,14 @@ def inventory(repo, metadata_path, npm_root, max_bytes=None):
         require(isinstance(package.get("source"), str) and package["source"].startswith("registry+"), "release needs reviewed registry-only third-party Cargo inputs")
         label = f"cargo/{package['name']}-{package['version']}"
         require(safe_relative(label), "invalid Cargo package identity")
-        files = license_files(Path(package["manifest_path"]).parent, package.get("license_file"), notices.remaining)
+        files, provenance = dependency_notices(repo, Path(package["manifest_path"]).parent, f"cargo:{package['name']}@{package['version']}", overrides, notices.remaining, package.get("license_file"))
         paths = []
         for name, data in files.items():
             destination = f"share/ferrum-atlas/notices/{label}/{name}"
             require(destination not in notices, "duplicate dependency notice identity")
             notices[destination] = data
             paths.append(destination)
-        packages.append({"ecosystem": "cargo", "name": package["name"], "version": package["version"], "license": package["license"], "notices": paths})
+        packages.append({"ecosystem": "cargo", "name": package["name"], "version": package["version"], "license": package["license"], "notices": paths, "supplemental_notice_provenance": provenance})
     require(npm_root.is_dir() and not npm_root.is_symlink(), "installed viewer directory required")
     for name, package in sorted(lock["packages"].items()):
         if not name:
@@ -157,11 +221,13 @@ def inventory(repo, metadata_path, npm_root, max_bytes=None):
         require(name.startswith("node_modules/") and safe_relative(name), "invalid npm package path")
         require(package.get("license"), f"missing declared npm license: {name}")
         installed = npm_root / name
-        record = {"ecosystem": "npm", "name": name, "version": package["version"], "license": package["license"], "installed": installed.exists(), "optional": bool(package.get("optional")), "notices": []}
+        record = {"ecosystem": "npm", "name": name, "version": package["version"], "license": package["license"], "installed": installed.exists(), "optional": bool(package.get("optional")), "notices": [], "supplemental_notice_provenance": []}
         if installed.exists():
             actual = json.loads(read_regular(installed / "package.json", 1024 * 1024))
             require(actual.get("version") == package["version"], f"installed npm version differs from lock: {name}")
-            for filename, data in license_files(installed, max_bytes=notices.remaining).items():
+            files, provenance = dependency_notices(repo, installed, f"npm:{name}@{package['version']}", overrides, notices.remaining)
+            record["supplemental_notice_provenance"] = provenance
+            for filename, data in files.items():
                 destination = f"share/ferrum-atlas/notices/npm/{name.removeprefix('node_modules/')}/{package['version']}/{filename}"
                 require(safe_relative(destination) and destination not in notices, "duplicate or invalid npm notice path")
                 notices[destination] = data
@@ -279,10 +345,9 @@ def allowed_member(name):
 
 
 def validate(archive):
-    require(archive.stat().st_size <= MAX_TOTAL, "compressed archive exceeds budget")
     hashes, sizes, documents = {}, {}, {}
     prefix, total = None, 0
-    with tarfile.open(archive, "r|gz") as tar:
+    with regular_stream(archive, MAX_TOTAL) as source, tarfile.open(fileobj=source, mode="r|gz") as tar:
         for member in tar:
             require(len(hashes) < MAX_FILES + 2, "archive file count exceeds budget")
             require(member.isfile() and not member.pax_headers, "archive links, directories, special files and extended headers are forbidden")
@@ -341,6 +406,11 @@ def validate(archive):
         else:
             require(dependency.get("optional") is True, "only absent optional dependencies may omit notices")
         require(all(name in hashes and name.startswith("share/ferrum-atlas/notices/") for name in dependency["notices"]), "dependency notice missing")
+        require(all(sizes[name] > 0 for name in dependency["notices"]), "empty dependency notice text")
+        for source in dependency.get("supplemental_notice_provenance", []):
+            require(pinned_notice_url(source["url"]), "supplemental notice URL is not pinned")
+            matched = [name for name in dependency["notices"] if name.endswith("/" + source["notice_name"])]
+            require(len(matched) == 1 and hashes[matched[0]] == source["sha256"], "supplemental notice provenance digest mismatch")
     return manifest
 
 
