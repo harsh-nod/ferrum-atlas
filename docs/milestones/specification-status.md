@@ -101,7 +101,8 @@ the final compiler-evidence cancellation fixes:
 - Browser: 91 tests passed with the real pinned compiler enabled, including
   actual capture/import/HTTP/metrics/review/restart, desktop/mobile, source-byte
   selection, nonblank canvas checks, cancellation races and 200% Chromium zoom.
-- Packaging: 29 Python regressions passed. Benchmark/study validation: 14 tests
+- Packaging: 31 Python regressions passed after the documentation follow-up,
+  including compatibility checks for older candidates. Benchmark/study validation: 14 tests
   passed; all five checked benchmark reports validated without qualifying a tier.
 - Workspace Clippy with warnings denied, formatting, generated TypeScript
   verification and the production viewer build passed. A refreshed root lockfile

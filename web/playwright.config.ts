@@ -4,6 +4,9 @@ const port = Number(process.env.ATLAS_WEB_TEST_PORT ?? "4173");
 if (!Number.isInteger(port) || port < 1024 || port > 65535)
   throw new Error("ATLAS_WEB_TEST_PORT must be an integer in 1024..65535");
 const baseURL = `http://127.0.0.1:${port}`;
+const installedPackage = Boolean(
+  process.env.ATLAS_TEST_BINARY && process.env.ATLAS_TEST_WEB_DIR,
+);
 
 export default defineConfig({
   testDir: "./tests",
@@ -18,10 +21,12 @@ export default defineConfig({
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
   },
-  webServer: {
-    command: `npm run dev -- --port ${port} --strictPort`,
-    url: baseURL,
-    reuseExistingServer: false,
-    timeout: 30_000,
-  },
+  webServer: installedPackage
+    ? undefined
+    : {
+        command: `npm run dev -- --port ${port} --strictPort`,
+        url: baseURL,
+        reuseExistingServer: false,
+        timeout: 30_000,
+      },
 });
