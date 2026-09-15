@@ -4,6 +4,9 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use ts_rs::TS;
 
+mod observations;
+pub use observations::*;
+
 pub const SCHEMA_VERSION: u32 = 1;
 pub const API_VERSION: &str = "1";
 
@@ -148,6 +151,14 @@ pub struct Metrics {
     pub unsafe_blocks: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum CfgStatus {
+    Active,
+    Inactive,
+    Unknown,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct Definition {
     pub id: DefinitionId,
@@ -163,6 +174,7 @@ pub struct Definition {
     pub span: Span,
     pub body_span: Option<Span>,
     pub cfg: Vec<String>,
+    pub cfg_status: CfgStatus,
     pub visibility: String,
     pub metrics: Metrics,
 }
@@ -391,6 +403,7 @@ pub fn typescript() -> String {
         CrateInput,
         BuildContext,
         Span,
+        CfgStatus,
         Metrics,
         Definition,
         Target,
@@ -414,6 +427,16 @@ pub fn typescript() -> String {
         DiffResponse,
         Capabilities,
         ApiError
+    );
+    emit!(
+        TestOutcome,
+        ArtifactIdentity,
+        TestObservation,
+        TraceEvent,
+        TraceStream,
+        ObservationBundle,
+        ObservationSummary,
+        ObservationWindow
     );
     output
 }

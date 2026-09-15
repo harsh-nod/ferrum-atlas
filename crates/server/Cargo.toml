@@ -7,6 +7,7 @@ license.workspace = true
 atlas-model.workspace = true
 atlas-store.workspace = true
 atlas-query.workspace = true
+atlas-evidence.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -1,0 +1,266 @@
+use serde_json::Value;
+use std::{
+    fs,
+    path::Path,
+    process::{Command, Output},
+};
+
+struct Project {
+    temp: tempfile::TempDir,
+}
+impl Project {
+    fn new() -> Self {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("project");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname='pilot'\nversion='0.1.0'\nedition='2021'\n[features]\nfast=[]\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/lib.rs"),
+            "pub mod engine;\npub fn entry(value: u32) -> u32 { engine::step(value) }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/engine.rs"),
+            "pub fn step(value: u32) -> u32 { if value > 0 { value + 1 } else { 0 } }\n",
+        )
+        .unwrap();
+        Self { temp }
+    }
+    fn root(&self) -> String {
+        self.temp
+            .path()
+            .join("project")
+            .to_str()
+            .unwrap()
+            .to_owned()
+    }
+    fn store(&self) -> String {
+        self.temp.path().join("store").to_str().unwrap().to_owned()
+    }
+    fn command(&self, args: &[&str]) -> Output {
+        Command::new(env!("CARGO_BIN_EXE_atlas"))
+            .arg("--store")
+            .arg(self.store())
+            .args(args)
+            .output()
+            .unwrap()
+    }
+    fn run(&self, args: &[&str]) -> Value {
+        let output = self.command(args);
+        assert!(
+            output.status.success(),
+            "atlas {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice(&output.stdout).unwrap_or_else(|_| {
+            panic!(
+                "invalid output: {}",
+                String::from_utf8_lossy(&output.stdout)
+            )
+        })
+    }
+    fn init(&self) {
+        self.run(&["init", "--workspace", &self.root(), "--trust", "read-only"]);
+    }
+    fn index(&self, level: &str) -> Value {
+        self.run(&["index", "--level", level])
+    }
+}
+
+#[test]
+fn real_workspace_survives_restart_and_reindexes_deterministically() {
+    let project = Project::new();
+    project.init();
+    let first = project.index("semantic");
+    let second = project.index("semantic");
+    assert_eq!(first["id"], second["id"]);
+    assert_eq!(first["fact_digest"], second["fact_digest"]);
+    let search = project.run(&["query", "search", "--text", "entry"]);
+    assert_eq!(search["items"].as_array().unwrap().len(), 1);
+    let id = search["items"][0]["id"].as_str().unwrap();
+    let graph = project.run(&["query", "callees", "--symbol", id]);
+    let names: Vec<_> = graph["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v["name"].as_str())
+        .collect();
+    assert!(names.contains(&"entry"));
+    assert!(
+        names.contains(&"step"),
+        "direct cross-module call must resolve: {graph}"
+    );
+    assert!(
+        graph["edges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v["target"]["kind"] == "resolved")
+    );
+    let snapshots = project.run(&["snapshots"]);
+    assert_eq!(snapshots.as_array().unwrap().len(), 1);
+    assert!(project.command(&["doctor"]).status.success());
+    assert!(project.command(&["gc", "--dry-run"]).status.success());
+}
+
+#[test]
+fn body_edit_has_a_pinned_before_after_diff() {
+    let project = Project::new();
+    project.init();
+    let before = project.index("semantic");
+    fs::write(
+        Path::new(&project.root()).join("src/engine.rs"),
+        "pub fn step(value: u32) -> u32 { value + 7 }\n",
+    )
+    .unwrap();
+    let after = project.index("semantic");
+    assert_ne!(before["id"], after["id"]);
+    let diff = project.run(&[
+        "diff",
+        "--before",
+        before["id"].as_str().unwrap(),
+        "--after",
+        after["id"].as_str().unwrap(),
+    ]);
+    let changes = diff["changes"].as_array().unwrap();
+    assert!(changes.iter().any(|c| {
+        c["after"]["name"] == "step"
+            && c["changed_fields"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|f| f.as_str().is_some_and(|f| f.contains("body")))
+    }));
+    let old = project.run(&[
+        "query",
+        "search",
+        "--snapshot",
+        before["id"].as_str().unwrap(),
+        "--text",
+        "step",
+    ]);
+    let new = project.run(&[
+        "query",
+        "search",
+        "--snapshot",
+        after["id"].as_str().unwrap(),
+        "--text",
+        "step",
+    ]);
+    assert_ne!(old["items"][0]["body_hash"], new["items"][0]["body_hash"]);
+}
+
+#[test]
+fn opening_and_indexing_never_runs_workspace_build_scripts() {
+    let project = Project::new();
+    let root = Path::new(&project.root()).to_owned();
+    fs::write(
+        root.join("build.rs"),
+        "fn main() { panic!(\"read-only capture must not execute build scripts\"); }\n",
+    )
+    .unwrap();
+    fs::create_dir(root.join(".cargo")).unwrap();
+    fs::write(
+        root.join(".cargo/config.toml"),
+        "[build]\nrustc-wrapper = '/nonexistent/ferrum-atlas-read-only-check'\n",
+    )
+    .unwrap();
+    project.init();
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(
+        fs::metadata(project.store()).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    let snapshot = project.index("semantic");
+    assert_eq!(snapshot["context"]["trust"], "read_only");
+    assert_ne!(snapshot["coverage"]["status"], "complete");
+    assert!(!root.join("target").exists());
+}
+
+#[test]
+fn rejected_jobs_leave_the_previous_snapshot_browsable() {
+    let project = Project::new();
+    project.init();
+    let snapshot = project.index("syntax");
+    assert!(
+        !project
+            .command(&["index", "--workspace", "/nonexistent/ferrum-atlas-fixture"])
+            .status
+            .success()
+    );
+    assert!(
+        !project
+            .command(&["index", "--memory-mib", "1"])
+            .status
+            .success()
+    );
+    assert!(
+        !project
+            .command(&["index", "--disk-quota-mib", "0"])
+            .status
+            .success()
+    );
+    let snapshots = project.run(&["snapshots"]);
+    assert_eq!(snapshots[0]["id"], snapshot["id"]);
+    let results = project.run(&["query", "search", "--text", "entry"]);
+    assert_eq!(results["items"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn profiles_exports_and_raw_benchmark_samples_are_explicit() {
+    let project = Project::new();
+    project.init();
+    let first = project.index("syntax");
+    let other = project.run(&[
+        "index",
+        "--level",
+        "syntax",
+        "--profile",
+        "feature-fast",
+        "--features",
+        "fast",
+    ]);
+    assert_ne!(first["context"]["id"], other["context"]["id"]);
+    let output = project.temp.path().join("evidence.json");
+    let export = project.command(&[
+        "export",
+        "--snapshot",
+        first["id"].as_str().unwrap(),
+        "--output",
+        output.to_str().unwrap(),
+    ]);
+    assert!(
+        export.status.success(),
+        "{}",
+        String::from_utf8_lossy(&export.stderr)
+    );
+    let data: Value = serde_json::from_slice(&fs::read(&output).unwrap()).unwrap();
+    assert_eq!(data["snapshot"]["id"], first["id"]);
+    assert!(!data["limitations"].as_array().unwrap().is_empty());
+    let benchmark = project.run(&[
+        "benchmark",
+        "--snapshot",
+        first["id"].as_str().unwrap(),
+        "--samples",
+        "30",
+    ]);
+    assert_eq!(benchmark["samples_ms"].as_array().unwrap().len(), 30);
+    assert!(benchmark["p95_ms"].as_f64().unwrap() >= 0.0);
+    assert!(
+        !project
+            .command(&["benchmark", "--samples", "2"])
+            .status
+            .success()
+    );
+    assert!(!project.command(&["gc"]).status.success());
+    assert!(
+        !project
+            .command(&["serve", "--listen", "0.0.0.0:7878"])
+            .status
+            .success()
+    );
+}
