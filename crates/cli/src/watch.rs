@@ -75,6 +75,29 @@ struct Response {
     error: Option<String>,
 }
 
+impl Response {
+    fn validate(&self, previous: Option<&(SourceId, ContextId)>) -> Result<()> {
+        match self.status {
+            Status::Changed => ensure!(
+                self.source_id.is_some() && self.context_id.is_some() && self.error.is_none(),
+                "invalid changed response"
+            ),
+            Status::Unchanged => ensure!(
+                self.error.is_none()
+                    && previous
+                        .is_some_and(|(source, context)| self.source_id.as_ref() == Some(source)
+                            && self.context_id.as_ref() == Some(context)),
+                "unchanged response has no matching successful capture"
+            ),
+            Status::Failed => ensure!(
+                self.source_id.is_none() && self.context_id.is_none() && self.error.is_some(),
+                "invalid failed response"
+            ),
+        }
+        Ok(())
+    }
+}
+
 pub(super) fn run(mut config: WatchConfig, cancelled: Arc<AtomicBool>) -> Result<WatchReport> {
     ensure!(
         (50..=60_000).contains(&config.interval_ms),
@@ -257,6 +280,7 @@ struct Session {
     stream: UnixStream,
     scratch: tempfile::TempDir,
     captures: u32,
+    previous: Option<(SourceId, ContextId)>,
 }
 
 impl Session {
@@ -305,6 +329,7 @@ impl Session {
             stream,
             scratch,
             captures: 0,
+            previous: None,
         })
     }
 
@@ -334,6 +359,7 @@ impl Session {
                 .is_none_or(|error| error.len() <= 4096),
             "watch error message exceeds limit"
         );
+        response.validate(self.previous.as_ref())?;
         let batch = if response.status == Status::Changed {
             let path = self.scratch.path().join("facts.json");
             ensure!(
@@ -343,6 +369,7 @@ impl Session {
             let parsed = serde_json::from_reader::<_, FactBatch>(File::open(&path)?);
             fs::remove_file(path)?;
             let batch = parsed?;
+            atlas_store::validate(&batch)?;
             ensure!(
                 response.source_id.as_ref() == Some(&batch.source.id)
                     && response.context_id.as_ref() == Some(&batch.context.id),
@@ -352,6 +379,7 @@ impl Session {
                 response.error.is_none(),
                 "changed response contains an error"
             );
+            self.previous = Some((batch.source.id.clone(), batch.context.id.clone()));
             Some(batch)
         } else {
             ensure!(
@@ -598,6 +626,8 @@ mod tests {
             .unwrap();
         assert!(read_frame::<Request>(&mut right, || Ok(())).is_err());
         assert!(write_frame(&mut left, &"x".repeat(MAX_FRAME_BYTES)).is_err());
+        left.write_all(&vec![b'x'; MAX_FRAME_BYTES + 1]).unwrap();
+        assert!(read_frame::<Request>(&mut right, || Ok(())).is_err());
     }
 
     #[test]
@@ -615,5 +645,28 @@ mod tests {
         cancel.store(false, Ordering::Release);
         let deadline = Instant::now() + Duration::from_millis(50);
         assert!(read_frame::<Request>(&mut right, || check_wait(deadline, &cancel)).is_err());
+    }
+
+    #[test]
+    fn unchanged_response_requires_matching_previous_success() {
+        let source = SourceId("source:previous".into());
+        let context = ContextId("context:selected".into());
+        let mut response = Response {
+            version: VERSION,
+            sequence: 2,
+            status: Status::Unchanged,
+            source_id: Some(source.clone()),
+            context_id: Some(context.clone()),
+            error: None,
+        };
+        assert!(response.validate(None).is_err());
+        assert!(response.validate(Some(&(source, context))).is_ok());
+        response.error = Some("not a success".into());
+        assert!(response.validate(None).is_err());
+        response.status = Status::Failed;
+        assert!(response.validate(None).is_err());
+        response.source_id = None;
+        response.context_id = None;
+        assert!(response.validate(None).is_ok());
     }
 }
