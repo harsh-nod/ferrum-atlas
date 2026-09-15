@@ -156,6 +156,15 @@ export async function mockApi(
     }
     if (url.pathname === "/v1/snapshots")
       return route.fulfill({ json: snapshots });
+    if (/^\/v1\/snapshots\/[^/]+\/prepare$/.test(url.pathname)) {
+      return route.fulfill({
+        json: {
+          snapshot_id: decodeURIComponent(url.pathname.split("/")[3]),
+          context_id: url.searchParams.get("context_id"),
+          ready: true,
+        },
+      });
+    }
     if (/^\/v1\/snapshots\/[^/]+\/(unpin|pin)$/.test(url.pathname)) {
       const body = route.request().postDataJSON();
       return route.fulfill({

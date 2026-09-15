@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { request } from "./api/client";
+import { request, RequestError } from "./api/client";
 import type { SnapshotPinState } from "./api/types";
 import { loadBookmarks } from "./state";
 import type { Bookmark } from "./state";
@@ -175,7 +175,11 @@ export function useReadingTrail(session: string) {
             await updatePin(item, false, signal);
           } catch (cause) {
             if (!signal.aborted) status(item.id, "failed");
-            throw cause;
+            const absent =
+              cause instanceof RequestError &&
+              cause.status === 404 &&
+              ["unknown_snapshot", "not_found"].includes(cause.code);
+            if (!absent) throw cause;
           }
         }
         if (signal.aborted) return;

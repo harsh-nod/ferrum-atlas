@@ -38,7 +38,7 @@ test("bookmark names survive reload, pin exact scope, and unpin only that bookma
 }) => {
   await mockApi(page);
   const requests: { path: string; name: string; context_id: string }[] = [];
-  await page.route("**/v1/snapshots/*/*", async (route) => {
+  await page.route("**/v1/snapshots/*/{pin,unpin}", async (route) => {
     expect(route.request().headers().authorization).toBe("Bearer test-token");
     requests.push({
       path: new URL(route.request().url()).pathname,
@@ -111,7 +111,7 @@ for (const code of [429, 503]) {
     );
     let failing = true;
     const names: string[] = [];
-    await page.route("**/v1/snapshots/*/*", async (route) => {
+    await page.route("**/v1/snapshots/*/{pin,unpin}", async (route) => {
       names.push(route.request().postDataJSON().name);
       if (failing)
         return route.fulfill({
@@ -150,7 +150,7 @@ test("retention remains pending until the matching response and refuses a mismat
 }) => {
   await mockApi(page);
   let finish: (() => void) | undefined;
-  await page.route("**/v1/snapshots/*/*", async (route) => {
+  await page.route("**/v1/snapshots/*/{pin,unpin}", async (route) => {
     await new Promise<void>((resolve) => {
       finish = resolve;
     });
@@ -234,6 +234,63 @@ test("storage failure does not create an untracked server pin", async ({
   await expect(page.getByRole("alert")).toContainText("Storage quota exceeded");
   await expect(page.locator(".bookmark-row")).toHaveCount(0);
   expect(pins).toBe(0);
+});
+
+test("a confirmed missing snapshot can be removed locally but authorization failures cannot", async ({
+  page,
+}) => {
+  await mockApi(page);
+  await page.addInitScript(
+    ({ storage, legacy }) => {
+      localStorage.setItem(
+        storage,
+        JSON.stringify([
+          {
+            ...legacy,
+            location: { ...legacy.location, snapshot: "snapshot:missing" },
+          },
+        ]),
+      );
+    },
+    { storage, legacy },
+  );
+  let forbidden = true;
+  await page.route("**/v1/snapshots/snapshot%3Amissing/*", (route) =>
+    route.fulfill({
+      status: forbidden ? 403 : 404,
+      json: {
+        code: forbidden ? "forbidden" : "unknown_snapshot",
+        message: "Snapshot unavailable",
+        correlation_id: "missing-pin",
+      },
+    }),
+  );
+  await open(page);
+  await expect(
+    page.getByRole("button", {
+      name: `Remove trail pin ${legacy.label}`,
+      exact: true,
+    }),
+  ).toBeEnabled();
+  await page
+    .getByRole("button", {
+      name: `Remove trail pin ${legacy.label}`,
+      exact: true,
+    })
+    .click();
+  await expect(page.getByRole("alert")).toContainText("forbidden");
+  await expect(page.locator(".bookmark-row")).toHaveCount(1);
+  forbidden = false;
+  await page
+    .getByRole("button", {
+      name: `Remove trail pin ${legacy.label}`,
+      exact: true,
+    })
+    .click();
+  await expect(page.locator(".bookmark-row")).toHaveCount(0);
+  expect(await page.evaluate((key) => localStorage.getItem(key), storage)).toBe(
+    "[]",
+  );
 });
 
 test("a full trail preserves all forty server pin identities without silent eviction", async ({
