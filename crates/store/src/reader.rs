@@ -2,7 +2,13 @@ use crate::{Error, Result, Store, VerifiedShard};
 use atlas_model::*;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use serde::de::DeserializeOwned;
+use sha2::{Digest, Sha256};
+use std::fs::File;
+use std::io::Read;
 use std::path::{Path, PathBuf};
+
+const SOURCE_LIMIT: usize = 64 * 1024 * 1024;
+const SOURCE_CHUNK: usize = 64 * 1024;
 
 pub struct SnapshotReader {
     store: Store,
@@ -290,6 +296,17 @@ impl SnapshotReader {
     }
 
     pub fn source(&self, id: &FileId) -> Result<Option<SourceFile>> {
+        self.source_with_stop(id, SOURCE_LIMIT, &|| false)
+    }
+
+    /// Read and validate exact source bytes cooperatively, never returning a partial file.
+    pub fn source_with_stop(
+        &self,
+        id: &FileId,
+        max_bytes: usize,
+        stopped: &dyn Fn() -> bool,
+    ) -> Result<Option<SourceFile>> {
+        source_checkpoint(stopped)?;
         self.check_identity()?;
         let Some(mut file) = self
             .connection
@@ -313,18 +330,118 @@ impl SnapshotReader {
             .content_hash
             .strip_prefix("content:")
             .ok_or_else(|| Error::Unavailable("invalid content digest".into()))?;
-        let path = self.store.object_path("sources", hash)?;
-        if std::fs::metadata(&path)?.len() > 64 * 1024 * 1024 {
-            return Err(Error::Unavailable(
-                "source object exceeds local 64 MiB limit".into(),
-            ));
+        source_checkpoint(stopped)?;
+        self.store.object_path("sources", hash)?;
+        let mut input = self.open_source(hash)?;
+        let identity = crate::FileIdentity::of(&input)?;
+        let max_bytes = max_bytes.min(SOURCE_LIMIT);
+        if identity.bytes > max_bytes as u64 {
+            return Err(Error::BudgetExhausted);
         }
-        file.text = std::fs::read_to_string(path)?;
-        if digest("content", &file.text) != file.content_hash {
+        file.text = read_source_text(&mut input, max_bytes, stopped)?;
+        if source_digest(&file.text, stopped)? != file.content_hash {
             return Err(Error::Unavailable("source checksum mismatch".into()));
         }
+        if crate::FileIdentity::of(&input)? != identity {
+            return Err(Error::Unavailable(
+                "source changed during verification".into(),
+            ));
+        }
+        source_checkpoint(stopped)?;
         Ok(Some(file))
     }
+
+    fn open_source(&self, hash: &str) -> Result<File> {
+        use rustix::fs::{Mode, OFlags, open, openat};
+        let directory_flags =
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+        let root =
+            open(&self.store.root, directory_flags, Mode::empty()).map_err(std::io::Error::from)?;
+        let sources = openat(root, "sources", directory_flags, Mode::empty())
+            .map_err(std::io::Error::from)?;
+        let source = openat(
+            sources,
+            hash,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(std::io::Error::from)?;
+        Ok(source.into())
+    }
+}
+
+fn source_checkpoint(stopped: &dyn Fn() -> bool) -> Result<()> {
+    if stopped() {
+        Err(Error::BudgetExhausted)
+    } else {
+        Ok(())
+    }
+}
+
+fn read_source_text(
+    input: &mut impl Read,
+    max_bytes: usize,
+    stopped: &dyn Fn() -> bool,
+) -> Result<String> {
+    let mut text = String::new();
+    let mut pending = Vec::with_capacity(SOURCE_CHUNK + 3);
+    let mut buffer = [0; SOURCE_CHUNK];
+    loop {
+        source_checkpoint(stopped)?;
+        let count = match input.read(&mut buffer) {
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            result => result?,
+        };
+        source_checkpoint(stopped)?;
+        if text
+            .len()
+            .saturating_add(pending.len())
+            .saturating_add(count)
+            > max_bytes
+        {
+            return Err(Error::BudgetExhausted);
+        }
+        pending.extend_from_slice(&buffer[..count]);
+        // Preserve at most three bytes of an incomplete UTF-8 character between reads.
+        let valid = match std::str::from_utf8(&pending) {
+            Ok(_) => pending.len(),
+            Err(error) if error.error_len().is_none() && count != 0 => error.valid_up_to(),
+            Err(error) => {
+                return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, error).into());
+            }
+        };
+        text.push_str(
+            std::str::from_utf8(&pending[..valid])
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?,
+        );
+        pending.copy_within(valid.., 0);
+        pending.truncate(pending.len() - valid);
+        if count == 0 {
+            return Ok(text);
+        }
+    }
+}
+
+fn source_digest(text: &str, stopped: &dyn Fn() -> bool) -> Result<String> {
+    source_checkpoint(stopped)?;
+    // Match model::digest("content", text), serializing bounded string pieces
+    // so JSON escaping and hashing cannot hide a whole-file cancellation gap.
+    let mut hash = Sha256::new();
+    hash.update(b"ferrum-atlas:1\0content\0\"");
+    let mut start = 0;
+    while start < text.len() {
+        source_checkpoint(stopped)?;
+        let mut end = (start + SOURCE_CHUNK).min(text.len());
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        let encoded = serde_json::to_vec(&text[start..end])?;
+        hash.update(&encoded[1..encoded.len() - 1]);
+        start = end;
+    }
+    hash.update(b"\"");
+    source_checkpoint(stopped)?;
+    Ok(format!("content:{:x}", hash.finalize()))
 }
 
 fn collect<T: DeserializeOwned>(

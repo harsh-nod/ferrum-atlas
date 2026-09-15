@@ -198,3 +198,110 @@ fn verification_cache_and_untrusted_shard_size_are_bounded() {
         Err(Error::BudgetExhausted)
     ));
 }
+
+#[test]
+fn source_hash_matches_canonical_json_with_chunk_boundaries_and_cancellation() {
+    let _process_guard = crate::tests::process_test_guard();
+    for text in [
+        String::new(),
+        "\"\\\u{0}\u{1f}\r\n\u{03bb}\u{1f600}".repeat(10_000),
+        format!("{}\u{1f600}\r\n", "x".repeat(SOURCE_CHUNK - 1)),
+    ] {
+        assert_eq!(
+            source_digest(&text, &|| false).unwrap(),
+            digest("content", &text)
+        );
+    }
+    let calls = Cell::new(0);
+    assert!(matches!(
+        source_digest(&"x".repeat(SOURCE_CHUNK * 4), &|| {
+            calls.set(calls.get() + 1);
+            calls.get() > 2
+        }),
+        Err(Error::BudgetExhausted)
+    ));
+}
+
+#[test]
+fn source_reads_preserve_utf8_boundaries_and_reject_partial_or_oversized_input() {
+    let _process_guard = crate::tests::process_test_guard();
+    let text = format!("{}\u{1f600}\r\n\u{03bb}", "x".repeat(SOURCE_CHUNK - 1));
+    assert_eq!(
+        read_source_text(&mut text.as_bytes(), text.len(), &|| false).unwrap(),
+        text
+    );
+    assert!(matches!(
+        read_source_text(&mut text.as_bytes(), text.len() - 1, &|| false),
+        Err(Error::BudgetExhausted)
+    ));
+    for invalid in [vec![0xff], vec![0xf0, 0x9f], vec![b'a', 0xc0, 0xaf]] {
+        assert!(read_source_text(&mut invalid.as_slice(), 10, &|| false).is_err());
+    }
+    let calls = Cell::new(0);
+    let huge = vec![b'x'; SOURCE_CHUNK * 8];
+    assert!(matches!(
+        read_source_text(&mut huge.as_slice(), huge.len(), &|| {
+            calls.set(calls.get() + 1);
+            calls.get() > 3
+        }),
+        Err(Error::BudgetExhausted)
+    ));
+    assert!(read_source_text(&mut huge.as_slice(), huge.len(), &|| false).is_ok());
+}
+
+#[test]
+fn exact_source_reads_enforce_metadata_limits_and_reject_symlink_objects() {
+    let _process_guard = crate::tests::process_test_guard();
+    let (temp, store, snapshot, _hash, _path) = fixture();
+    let reader = store.reader(&snapshot.id).unwrap();
+    let id = &crate::tests::batch("cache").source.files[0].id;
+    let source = reader.source(id).unwrap().unwrap();
+    assert!(matches!(
+        reader.source_with_stop(id, source.text.len(), &|| true),
+        Err(Error::BudgetExhausted)
+    ));
+    assert!(matches!(
+        reader.source_with_stop(id, source.text.len() - 1, &|| false),
+        Err(Error::BudgetExhausted)
+    ));
+    assert_eq!(
+        reader
+            .source_with_stop(id, source.text.len(), &|| false)
+            .unwrap()
+            .unwrap()
+            .text,
+        source.text
+    );
+    let path = store
+        .object_path(
+            "sources",
+            source.content_hash.strip_prefix("content:").unwrap(),
+        )
+        .unwrap();
+    let held = temp.path().join("held-source");
+    fs::rename(&path, &held).unwrap();
+    symlink(&held, &path).unwrap();
+    assert!(reader.source(id).is_err());
+    fs::remove_file(&path).unwrap();
+    fs::rename(&held, &path).unwrap();
+    let sources = temp.path().join("sources");
+    let moved = temp.path().join("held-sources");
+    fs::rename(&sources, &moved).unwrap();
+    symlink(&moved, &sources).unwrap();
+    assert!(reader.source(id).is_err());
+    fs::remove_file(&sources).unwrap();
+    fs::rename(&moved, &sources).unwrap();
+    alter_same_size(&path);
+    assert!(reader.source(id).is_err());
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_len(SOURCE_LIMIT as u64 + 1)
+        .unwrap();
+    assert!(matches!(
+        reader.source_with_stop(id, 256 * 1024, &|| false),
+        Err(Error::BudgetExhausted)
+    ));
+}

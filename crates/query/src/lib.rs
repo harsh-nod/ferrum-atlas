@@ -371,9 +371,32 @@ impl QueryEngine {
         start_line: u32,
         line_count: u32,
     ) -> Result<SourceWindow> {
-        let reader = self.reader(snapshot, context, &QueryControl::new(INTERACTIVE))?;
-        let source = reader.source(file)?.ok_or(Error::NotFound)?;
-        source_window(snapshot, source, start_line, line_count)
+        self.source_with_control(
+            snapshot,
+            context,
+            file,
+            start_line,
+            line_count,
+            &QueryControl::new(INTERACTIVE),
+        )
+    }
+
+    pub fn source_with_control(
+        &self,
+        snapshot: &SnapshotId,
+        context: &ContextId,
+        file: &FileId,
+        start_line: u32,
+        line_count: u32,
+        control: &QueryControl,
+    ) -> Result<SourceWindow> {
+        validate_source_lines(start_line, line_count)?;
+        let reader = self.reader(snapshot, context, control)?;
+        let stopped = || control.stopped();
+        let source = reader
+            .source_with_stop(file, usize::MAX, &stopped)?
+            .ok_or(Error::NotFound)?;
+        source_window(snapshot, source, start_line, line_count, &stopped)
     }
 
     pub fn source_at_byte(
@@ -384,19 +407,63 @@ impl QueryEngine {
         offset: u32,
         line_count: u32,
     ) -> Result<SourceWindow> {
-        let reader = self.reader(snapshot, context, &QueryControl::new(INTERACTIVE))?;
-        let source = reader.source(file)?.ok_or(Error::NotFound)?;
+        self.source_at_byte_with_control(
+            snapshot,
+            context,
+            file,
+            offset,
+            line_count,
+            &QueryControl::new(INTERACTIVE),
+        )
+    }
+
+    pub fn source_at_byte_with_control(
+        &self,
+        snapshot: &SnapshotId,
+        context: &ContextId,
+        file: &FileId,
+        offset: u32,
+        line_count: u32,
+        control: &QueryControl,
+    ) -> Result<SourceWindow> {
+        validate_source_lines(1, line_count)?;
+        let reader = self.reader(snapshot, context, control)?;
+        let stopped = || control.stopped();
+        let source = reader
+            .source_with_stop(file, usize::MAX, &stopped)?
+            .ok_or(Error::NotFound)?;
         if offset as usize > source.text.len() || !source.text.is_char_boundary(offset as usize) {
             return Err(Error::InvalidQuery(
                 "source byte offset is out of bounds or splits UTF-8".into(),
             ));
         }
-        let line = source.text.as_bytes()[..offset as usize]
-            .iter()
-            .filter(|&&byte| byte == b'\n')
-            .count() as u32
-            + 1;
-        source_window(snapshot, source, line, line_count)
+        let line = source_line_at(&source.text.as_bytes()[..offset as usize], &stopped)?;
+        source_window(snapshot, source, line, line_count, &stopped)
+    }
+
+    /// Exact, verified input for opt-in source analysis, never a truncated window.
+    pub fn source_for_analysis(
+        &self,
+        snapshot: &SnapshotId,
+        context: &ContextId,
+        file: &FileId,
+        max_bytes: usize,
+        control: &QueryControl,
+    ) -> Result<SourceFile> {
+        if max_bytes == 0 || max_bytes > SOURCE_BYTES {
+            return Err(Error::InvalidQuery(
+                "analysis source limit must be 1..262144 bytes".into(),
+            ));
+        }
+        let reader = self.reader(snapshot, context, control)?;
+        let source = reader
+            .source_with_stop(file, max_bytes, &|| control.stopped())?
+            .ok_or(Error::NotFound)?;
+        source_checkpoint(&|| control.stopped())?;
+        if source.text.len() > max_bytes {
+            return Err(Error::BudgetExhausted);
+        }
+        Ok(source)
     }
 
     pub fn neighborhood(&self, request: &GraphRequest) -> Result<GraphResponse> {
@@ -573,27 +640,30 @@ fn source_window(
     source: SourceFile,
     start_line: u32,
     line_count: u32,
+    stopped: &dyn Fn() -> bool,
 ) -> Result<SourceWindow> {
-    if start_line == 0 || line_count == 0 || line_count > 1000 {
-        return Err(Error::InvalidQuery(
-            "source requires one-based lines and a count of 1..1000".into(),
-        ));
-    }
+    validate_source_lines(start_line, line_count)?;
+    source_checkpoint(stopped)?;
     let mut total_lines = 1u32;
     let mut start = 0;
     let mut requested_end = source.text.len();
-    for (offset, byte) in source.text.bytes().enumerate() {
-        if byte != b'\n' {
-            continue;
-        }
-        total_lines += 1;
-        if total_lines == start_line {
-            start = offset + 1;
-        }
-        if total_lines == start_line.saturating_add(line_count) {
-            requested_end = offset + 1;
+    for (chunk, bytes) in source.text.as_bytes().chunks(64 * 1024).enumerate() {
+        source_checkpoint(stopped)?;
+        for (index, byte) in bytes.iter().enumerate() {
+            if *byte != b'\n' {
+                continue;
+            }
+            let offset = chunk * 64 * 1024 + index;
+            total_lines += 1;
+            if total_lines == start_line {
+                start = offset + 1;
+            }
+            if total_lines == start_line.saturating_add(line_count) {
+                requested_end = offset + 1;
+            }
         }
     }
+    source_checkpoint(stopped)?;
     if start_line > total_lines {
         return Err(Error::InvalidQuery("source line is out of bounds".into()));
     }
@@ -601,7 +671,7 @@ fn source_window(
     while !source.text.is_char_boundary(end) {
         end -= 1;
     }
-    bounded(SourceWindow {
+    let window = bounded(SourceWindow {
         snapshot_id: snapshot.clone(),
         file_id: source.id,
         path: source.path,
@@ -612,7 +682,36 @@ fn source_window(
         start_byte: start as u32,
         truncated: start > 0 || end < source.text.len(),
         encoding: "utf-8".into(),
-    })
+    })?;
+    source_checkpoint(stopped)?;
+    Ok(window)
+}
+
+fn validate_source_lines(start_line: u32, line_count: u32) -> Result<()> {
+    if start_line == 0 || line_count == 0 || line_count > 1000 {
+        return Err(Error::InvalidQuery(
+            "source requires one-based lines and a count of 1..1000".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn source_checkpoint(stopped: &dyn Fn() -> bool) -> Result<()> {
+    if stopped() {
+        Err(Error::BudgetExhausted)
+    } else {
+        Ok(())
+    }
+}
+
+fn source_line_at(prefix: &[u8], stopped: &dyn Fn() -> bool) -> Result<u32> {
+    let mut line = 1;
+    for bytes in prefix.chunks(64 * 1024) {
+        source_checkpoint(stopped)?;
+        line += bytes.iter().filter(|&&byte| byte == b'\n').count() as u32;
+    }
+    source_checkpoint(stopped)?;
+    Ok(line)
 }
 
 fn elapsed(started: Instant) -> u32 {
@@ -647,5 +746,7 @@ fn budget_coverage(coverage: &mut Coverage, limitation: &str) {
     coverage.limitations.push(limitation.into());
 }
 
+#[cfg(test)]
+mod source_tests;
 #[cfg(test)]
 mod tests;
