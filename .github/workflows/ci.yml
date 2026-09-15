@@ -83,6 +83,7 @@ jobs:
         run: cargo run --locked -p xtask -- check-types
       - name: Qualification and study validation
         run: |
+          python3 -m unittest discover -s scripts/tests -p 'test_release.py'
           python3 -m unittest discover -s benchmarks -p 'test_*.py'
           python3 benchmarks/validate.py report benchmarks/reports/regex-semantic-20260915.json
           python3 benchmarks/validate.py report benchmarks/reports/synthetic-100k-20260915.json

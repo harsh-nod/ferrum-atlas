@@ -619,20 +619,24 @@ async fn source(
     Path(id): Path<String>,
     Query(p): Query<SourceParams>,
 ) -> Result<Json<SourceWindow>, HttpError> {
+    let control = QueryControl::new(Duration::from_millis(250));
+    let _guard = CancelOnDrop(control.clone());
     execute(state, move |q| match p.offset {
-        Some(offset) => q.source_at_byte(
+        Some(offset) => q.source_at_byte_with_control(
             &p.snapshot_id,
             &p.context_id,
             &FileId(id),
             offset,
             p.lines.unwrap_or(200),
+            &control,
         ),
-        None => q.source(
+        None => q.source_with_control(
             &p.snapshot_id,
             &p.context_id,
             &FileId(id),
             p.start_line.unwrap_or(1),
             p.lines.unwrap_or(200),
+            &control,
         ),
     })
     .await
