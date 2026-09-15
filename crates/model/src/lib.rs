@@ -28,22 +28,46 @@ macro_rules! id_type {
         impl AsRef<str> for $name { fn as_ref(&self) -> &str { &self.0 } }
     )+};
 }
-id_type!(RepositoryId, SourceId, SnapshotId, ContextId, FileId, DefinitionId, RelationId, EvidenceId);
+id_type!(
+    RepositoryId,
+    SourceId,
+    SnapshotId,
+    ContextId,
+    FileId,
+    DefinitionId,
+    RelationId,
+    EvidenceId
+);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
-pub enum Status { Complete, Partial, Failed, Unavailable }
+pub enum Status {
+    Complete,
+    Partial,
+    Failed,
+    Unavailable,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum UnknownReason {
-    MissingDependency, CfgUnknown, MacroUnavailable, IndirectTargetUnknown,
-    ExternalBoundary, UnsupportedConstruct, BudgetExhausted, AnalysisFailed,
-    ArtifactMismatch, SyntaxOnly,
+    MissingDependency,
+    CfgUnknown,
+    MacroUnavailable,
+    IndirectTargetUnknown,
+    ExternalBoundary,
+    UnsupportedConstruct,
+    BudgetExhausted,
+    AnalysisFailed,
+    ArtifactMismatch,
+    SyntaxOnly,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-pub struct ReasonCount { pub reason: UnknownReason, pub count: u32 }
+pub struct ReasonCount {
+    pub reason: UnknownReason,
+    pub count: u32,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct Coverage {
@@ -52,9 +76,19 @@ pub struct Coverage {
     pub limitations: Vec<String>,
 }
 impl Coverage {
-    pub fn complete() -> Self { Self { status: Status::Complete, reasons: vec![], limitations: vec![] } }
+    pub fn complete() -> Self {
+        Self {
+            status: Status::Complete,
+            reasons: vec![],
+            limitations: vec![],
+        }
+    }
     pub fn partial(reason: UnknownReason, limitation: impl Into<String>) -> Self {
-        Self { status: Status::Partial, reasons: vec![ReasonCount { reason, count: 1 }], limitations: vec![limitation.into()] }
+        Self {
+            status: Status::Partial,
+            reasons: vec![ReasonCount { reason, count: 1 }],
+            limitations: vec![limitation.into()],
+        }
     }
 }
 
@@ -99,7 +133,11 @@ pub struct BuildContext {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-pub struct Span { pub file_id: FileId, pub start: u32, pub end: u32 }
+pub struct Span {
+    pub file_id: FileId,
+    pub start: u32,
+    pub end: u32,
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct Metrics {
@@ -132,8 +170,13 @@ pub struct Definition {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Target {
-    Resolved { id: DefinitionId },
-    Unknown { reason: UnknownReason, label: String },
+    Resolved {
+        id: DefinitionId,
+    },
+    Unknown {
+        reason: UnknownReason,
+        label: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -157,10 +200,18 @@ pub struct Evidence {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-pub struct Diagnostic { pub path: Option<String>, pub severity: String, pub message: String }
+pub struct Diagnostic {
+    pub path: Option<String>,
+    pub severity: String,
+    pub message: String,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-pub struct FlowPoint { pub kind: String, pub label: String, pub span: Span }
+pub struct FlowPoint {
+    pub kind: String,
+    pub label: String,
+    pub span: Span,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct FunctionFlow {
@@ -201,10 +252,16 @@ pub struct Snapshot {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
-pub struct Page { pub truncated: bool, pub next_cursor: Option<String> }
+pub struct Page {
+    pub truncated: bool,
+    pub next_cursor: Option<String>,
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
-pub struct Work { pub deadline_reached: bool, pub elapsed_ms: u32 }
+pub struct Work {
+    pub deadline_reached: bool,
+    pub elapsed_ms: u32,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 pub struct QueryResponse<T> {
@@ -219,7 +276,11 @@ pub struct QueryResponse<T> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
-pub enum Direction { Incoming, Outgoing, Both }
+pub enum Direction {
+    Incoming,
+    Outgoing,
+    Both,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 pub struct GraphRequest {
@@ -303,16 +364,57 @@ pub struct Capabilities {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-pub struct ApiError { pub code: String, pub message: String, pub correlation_id: String }
+pub struct ApiError {
+    pub code: String,
+    pub message: String,
+    pub correlation_id: String,
+}
 
 pub fn typescript() -> String {
     let mut output = String::from("// Generated by cargo run -p xtask -- types. Do not edit.\n");
     macro_rules! emit { ($($t:ty),+ $(,)?) => { $(output.push_str("export "); output.push_str(&<$t>::decl()); output.push('\n');)+ }; }
-    emit!(RepositoryId, SourceId, SnapshotId, ContextId, FileId, DefinitionId, RelationId, EvidenceId,
-        Status, UnknownReason, ReasonCount, Coverage, SourceFile, SourceSnapshot, CrateInput, BuildContext,
-        Span, Metrics, Definition, Target, Relation, Evidence, Diagnostic, FlowPoint, FunctionFlow,
-        FactBatch, Snapshot, Page, Work, QueryResponse<Definition>, Direction, GraphRequest, GraphResponse,
-        SourceWindow, DefinitionDetail, DiffRequest, DefinitionChange, DiffResponse, Capabilities, ApiError);
+    emit!(
+        RepositoryId,
+        SourceId,
+        SnapshotId,
+        ContextId,
+        FileId,
+        DefinitionId,
+        RelationId,
+        EvidenceId,
+        Status,
+        UnknownReason,
+        ReasonCount,
+        Coverage,
+        SourceFile,
+        SourceSnapshot,
+        CrateInput,
+        BuildContext,
+        Span,
+        Metrics,
+        Definition,
+        Target,
+        Relation,
+        Evidence,
+        Diagnostic,
+        FlowPoint,
+        FunctionFlow,
+        FactBatch,
+        Snapshot,
+        Page,
+        Work,
+        QueryResponse<Definition>,
+        Direction,
+        GraphRequest,
+        GraphResponse,
+        SourceWindow,
+        DefinitionDetail,
+        DiffRequest,
+        DefinitionChange,
+        DiffResponse,
+        Capabilities,
+        ApiError
+    );
     output
 }
 
@@ -328,7 +430,10 @@ mod tests {
     }
     #[test]
     fn unknown_targets_are_explicit_and_round_trip() {
-        let target = Target::Unknown { reason: UnknownReason::IndirectTargetUnknown, label: "callback".into() };
+        let target = Target::Unknown {
+            reason: UnknownReason::IndirectTargetUnknown,
+            label: "callback".into(),
+        };
         let json = serde_json::to_string(&target).unwrap();
         assert!(json.contains("\"kind\":\"unknown\""));
         assert_eq!(serde_json::from_str::<Target>(&json).unwrap(), target);
