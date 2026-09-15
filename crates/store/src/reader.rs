@@ -12,6 +12,67 @@ pub struct SnapshotReader {
 }
 
 impl SnapshotReader {
+    pub(crate) fn complete_batch(&self, max_bytes: usize) -> Result<FactBatch> {
+        self.verify()?;
+        let envelope: Option<Option<String>> = self.connection.query_row(
+            "SELECT CASE WHEN length(CAST(value AS BLOB))<=?1 THEN value ELSE NULL END FROM metadata WHERE key='fact_envelope'",
+            [max_bytes as i64], |row| row.get(0)).optional()?;
+        let envelope = envelope.ok_or_else(|| Error::Unavailable("complete export unavailable: legacy shard lacks a fact envelope; reindex into a fresh store (immutable existing snapshots are not upgraded in place)".into()))?.ok_or(Error::BudgetExhausted)?;
+        let mut remaining = max_bytes
+            .checked_sub(envelope.len())
+            .ok_or(Error::BudgetExhausted)?;
+        let mut batch: FactBatch = serde_json::from_str(&envelope)?;
+        batch.definitions = self.export_rows("definitions", &mut remaining)?;
+        batch.relations = self.export_rows("relations", &mut remaining)?;
+        batch.evidence = self.export_rows("evidence", &mut remaining)?;
+        batch.flows = self.export_rows("flows", &mut remaining)?;
+        batch.source.files = Vec::new();
+        if self.snapshot.file_count > 100_000 {
+            return Err(Error::BudgetExhausted);
+        }
+        for file in self.files()? {
+            let source = self
+                .source(&file.id)?
+                .ok_or_else(|| Error::Unavailable("missing archived source".into()))?;
+            remaining = remaining
+                .checked_sub(source.text.len())
+                .ok_or(Error::BudgetExhausted)?;
+            batch.source.files.push(source);
+        }
+        crate::validate(&batch)?;
+        let batch = crate::validate::normalize(&batch);
+        if digest("facts", &batch) != self.snapshot.fact_digest {
+            return Err(Error::Unavailable(
+                "complete snapshot fact digest mismatch".into(),
+            ));
+        }
+        Ok(batch)
+    }
+
+    fn export_rows<T: DeserializeOwned>(
+        &self,
+        table: &str,
+        remaining: &mut usize,
+    ) -> Result<Vec<T>> {
+        let (rows, bytes): (i64, i64) = self.connection.query_row(
+            &format!("SELECT count(*),coalesce(sum(length(CAST(payload AS BLOB))),0) FROM {table}"),
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        if rows > 1_000_000 || bytes < 0 || bytes as u64 > *remaining as u64 {
+            return Err(Error::BudgetExhausted);
+        }
+        *remaining -= bytes as usize;
+        let mut statement = self
+            .connection
+            .prepare(&format!("SELECT payload FROM {table}"))?;
+        let mut output = Vec::new();
+        for row in statement.query_map([], |row| row.get::<_, String>(0))? {
+            output.push(serde_json::from_str(&row?)?);
+        }
+        Ok(output)
+    }
+
     pub(crate) fn open(
         store: Store,
         snapshot: Snapshot,

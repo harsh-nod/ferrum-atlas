@@ -1,10 +1,12 @@
 //! Validated immutable snapshot storage and transactional publication.
 mod error;
+mod portable;
 mod reader;
 mod retention;
 mod validate;
 
 pub use error::{Error, Result};
+pub use portable::{ImportedSnapshot, PortableFile, PortableManifest};
 pub use reader::SnapshotReader;
 pub use retention::{GcObject, GcPlan, GcReport, RetainedSnapshot, RetentionPolicy, SnapshotPin};
 pub use validate::validate;
@@ -219,6 +221,17 @@ impl Store {
         expected: Option<&SnapshotId>,
         fail_after: Option<u8>,
     ) -> Result<Snapshot> {
+        self.publish_version(batch, head, expected, fail_after, None)
+    }
+
+    fn publish_version(
+        &self,
+        batch: &FactBatch,
+        head: &str,
+        expected: Option<&SnapshotId>,
+        fail_after: Option<u8>,
+        created_at: Option<&str>,
+    ) -> Result<Snapshot> {
         let _lease = self.lease(false, &|| false)?;
         validate(batch)?;
         if head.is_empty() || head.len() > 256 {
@@ -235,11 +248,13 @@ impl Store {
             repository_id: batch.source.repository_id.clone(),
             context: batch.context.clone(),
             revision: batch.source.revision.clone(),
-            created_at: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs()
-                .to_string(),
+            created_at: created_at.map(str::to_string).unwrap_or_else(|| {
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs()
+                    .to_string()
+            }),
             file_count: batch
                 .source
                 .files
@@ -506,6 +521,16 @@ fn build_shard(path: &Path, batch: &FactBatch, snapshot: &Snapshot) -> Result<()
     transaction.execute(
         "INSERT INTO metadata VALUES('context_id',?1)",
         [&snapshot.context.id.0],
+    )?;
+    let mut envelope = batch.clone();
+    envelope.source.files.clear();
+    envelope.definitions.clear();
+    envelope.relations.clear();
+    envelope.evidence.clear();
+    envelope.flows.clear();
+    transaction.execute(
+        "INSERT INTO metadata VALUES('fact_envelope',?1)",
+        [serde_json::to_string(&envelope)?],
     )?;
     for file in &batch.source.files {
         transaction.execute(

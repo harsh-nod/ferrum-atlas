@@ -49,6 +49,25 @@ fn pins_heads_recent_grace_and_observations_are_retention_roots() {
             .remove_snapshots
             .is_empty()
     );
+    let grace_only = RetentionPolicy {
+        grace_period: Duration::from_secs(86400),
+        ..policy()
+    };
+    assert!(
+        store
+            .gc_plan(&grace_only)
+            .unwrap()
+            .remove_snapshots
+            .is_empty()
+    );
+    let additional_root = RetentionPolicy {
+        additional_roots: BTreeSet::from([first.id.clone()]),
+        ..policy()
+    };
+    assert_eq!(
+        store.gc_plan(&additional_root).unwrap().remove_snapshots,
+        vec![second.id.clone()]
+    );
     let scope = digest("observations", &first.id);
     fs::create_dir_all(
         store
