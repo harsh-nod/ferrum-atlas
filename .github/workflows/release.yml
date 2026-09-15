@@ -1,0 +1,112 @@
+name: Local Prerelease Package
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Prerelease version matching the Cargo/viewer base (for example 0.1.0-alpha.1)
+        required: true
+        type: string
+      create_draft:
+        description: Create a draft prerelease for an existing matching reviewed tag
+        default: false
+        type: boolean
+  push:
+    tags: ['v[0-9]*']
+permissions:
+  contents: read
+concurrency:
+  group: local-prerelease-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: 2
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      commit: ${{ steps.version.outputs.commit }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.22.1
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Validate prerelease identity
+        id: version
+        env:
+          REQUESTED_VERSION: ${{ inputs.version || github.ref_name }}
+        run: |
+          VERSION="$(python3 scripts/release.py version --repo . --version "$REQUESTED_VERSION")"
+          printf 'version=%s\n' "$VERSION" >> "$GITHUB_OUTPUT"
+          printf 'commit=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Pinned tools and locked dependencies
+        run: |
+          rustup show
+          npm install --global npm@11.16.0 --ignore-scripts
+          node --version
+          npm --version
+          npm --prefix web ci
+      - name: Packaging and schema regressions
+        run: |
+          python3 -m unittest discover -s scripts/tests -p 'test_release.py'
+          cargo test --locked -p atlas-model --test release_compatibility
+          cargo run --locked -p xtask -- check-types
+      - name: Build explicit local artifacts
+        run: |
+          cargo build --locked --release --target x86_64-unknown-linux-gnu -p ferrum-atlas
+          npm --prefix web run build
+          target/x86_64-unknown-linux-gnu/release/atlas --version
+          target/x86_64-unknown-linux-gnu/release/atlas --help
+      - name: Package and validate
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          SOURCE_COMMIT: ${{ steps.version.outputs.commit }}
+        run: |
+          mkdir release-inputs release-output
+          cargo metadata --locked --format-version 1 --filter-platform x86_64-unknown-linux-gnu > release-inputs/cargo-metadata.json
+          python3 scripts/release.py package --repo . --version "$VERSION" \
+            --commit "$SOURCE_COMMIT" --epoch "$(git show -s --format=%ct HEAD)" \
+            --binary target/x86_64-unknown-linux-gnu/release/atlas --web-dist web/dist \
+            --cargo-metadata release-inputs/cargo-metadata.json --npm-root web --output release-output
+          python3 scripts/release.py validate "release-output/ferrum-atlas-${VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          cd release-output
+          sha256sum --check "ferrum-atlas-${VERSION}-x86_64-unknown-linux-gnu.tar.gz.sha256"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ferrum-atlas-${{ steps.version.outputs.version }}-x86_64-unknown-linux-gnu
+          path: |
+            release-output/*.tar.gz
+            release-output/*.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 30
+  draft:
+    needs: package
+    if: startsWith(github.ref, 'refs/tags/') || inputs.create_draft
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      VERSION: ${{ needs.package.outputs.version }}
+      RUN_ID: ${{ github.run_id }}
+      SOURCE_COMMIT: ${{ needs.package.outputs.commit }}
+    steps:
+      - name: Download only this run's validated package
+        run: gh run download "$RUN_ID" --name "ferrum-atlas-${VERSION}-x86_64-unknown-linux-gnu" --dir artifacts
+      - name: Create an unpublished draft, never a final release or implicit tag
+        run: |
+          TAG_COMMIT="$(gh api "repos/$GH_REPO/commits/v$VERSION" --jq .sha)"
+          test "$TAG_COMMIT" = "$SOURCE_COMMIT"
+          gh release create "v${VERSION}" \
+            "artifacts/ferrum-atlas-${VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+            "artifacts/ferrum-atlas-${VERSION}-x86_64-unknown-linux-gnu.tar.gz.sha256" \
+            --verify-tag --draft --prerelease --latest=false \
+            --title "Ferrum Atlas ${VERSION}: unqualified local prerelease" \
+            --notes 'Unqualified local Linux x86_64 prerelease candidate. No hosted/distributed support or L/S/O/X qualification claim. Maintainer review of tests, licensing, notices, compatibility and limitations is required before publication. No signing or independent bit-reproducible compiler-build claim.'

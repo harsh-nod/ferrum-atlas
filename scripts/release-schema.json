@@ -1,0 +1,11 @@
+{
+  "metadata_version": 1,
+  "deployment": "local_single_node",
+  "qualification": "unqualified_prerelease",
+  "model_schema_version": 1,
+  "store_schema_versions_read": [1],
+  "store_schema_version_write": 1,
+  "portable_schema_versions_read": [1],
+  "compiler_bundle_schema_versions_read": [1],
+  "migration_policy": "No automatic in-place migration; retain an untouched backup and rebuild or import into a new store."
+}
