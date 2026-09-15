@@ -27,9 +27,9 @@ atlas query callees --symbol definition:... --snapshot snapshot:...
 atlas diff --before snapshot:... --after snapshot:...
 ```
 
-Explicit BuildContext JSON is accepted through `index --context PATH`. Contexts identify captured inputs and limitations; no target values are guessed from the analysis host. Re-run `index` after editing. Published snapshots stay immutable and old browser sessions stay pinned. Unchanged inputs deduplicate; changed snapshots use full conservative reanalysis. Fine-grained semantic invalidation and file watching are not implemented.
+Explicit BuildContext JSON is accepted through `index --context PATH`. Contexts identify captured inputs and limitations; no target values are guessed from the analysis host. Re-run `index` after editing or use `watch` for authoritative polling with a warm semantic database. Published snapshots stay immutable and old browser sessions stay pinned. Unchanged normalized facts deduplicate. Watch refreshes all extracted facts and rebuilds the database on incompatible inputs; persistent fine-grained delta shards are not implemented. See [compiler and job operations](compiler-and-jobs.md).
 
-Source capture does not execute Cargo, rustc wrappers, build scripts or proc macros. Missing generated files, dependencies, sysroot metadata, or unknown cfg are reported. Broken source remains partially browsable. Compiler MIR and executable analysis return unsupported capability rather than a substituted source graph.
+Source capture does not execute Cargo, rustc wrappers, build scripts or proc macros. Missing generated files, dependencies, sysroot metadata, or unknown cfg are reported. Broken source remains partially browsable. Compiler MIR requires a separately generated, exact-toolchain bundle imported against the captured snapshot. Executable sandboxed analysis remains unavailable; source flow never substitutes for compiler CFG.
 
 ## Limits and Failures
 
@@ -37,13 +37,13 @@ Indexing runs in a subprocess with a cleared environment, address-space/CPU/outp
 
 The default store quota is 4096 MiB. Ingestion pauses at 80% existing usage; estimated publication growth is rejected at 90%. This is conservative admission accounting, not an OS disk quota. Concurrent publishers and filesystem overhead can still consume additional space. Preserve recovery headroom.
 
-`atlas doctor` checks catalog, shards, referenced objects and content hashes. `atlas gc --dry-run` reports unreferenced store-owned objects; deletion is deliberately unavailable until reader/pin retention is qualified. Published history is retained, so provision disk space or create separate stores. Never remove a source workspace as index cleanup.
+`atlas doctor` checks catalog, shards, referenced objects and content hashes. `atlas gc --dry-run --output PLAN` records an exact retention plan. `atlas gc --execute --plan PLAN` revalidates it before deletion. Live reader leases, heads, explicit pins, recent history, grace periods and observations protect retained data. Only registered owned objects are removable; source workspaces are never cleanup targets. Read [retention operations](retention.md) before changing policy.
 
 ## Backup and Restore
 
 Stop writers, then stop the local viewer and copy the entire store, including the catalog and its WAL/SHM sidecars if present. Do not copy only the database while a writer is active. Restore into a fresh directory, run `atlas --store RESTORED doctor`, then answer the same pinned symbol/source query. The catalog and referenced immutable objects are one backup unit. No in-place schema migration is supported; retain the original store when rebuilding with a new schema.
 
-`atlas export` writes a pinned symbol/evidence manifest. Its JSON explicitly lists omitted source, relation, trace and active-query capabilities. It is not a complete offline index backup.
+`atlas export` defaults to a limited symbol manifest. `atlas export --format portable --snapshot ID --output DIRECTORY` includes complete static facts, captured source and observation bundles, with checksums. `atlas import --input DIRECTORY` validates all objects before publication. See [portable snapshots](portable-snapshots.md) for budgets, legacy shard restrictions and compiler-import exclusions. A consistent whole-store backup additionally retains jobs, compiler imports, pins and local configuration.
 
 ## Imported Observations
 
@@ -59,4 +59,4 @@ The Evidence view displays these separate observations. Back up its `observation
 
 ## Qualification
 
-`atlas benchmark --samples 30 --output report.json` records every latency sample, the exact snapshot, configuration, coverage and basic hardware information. It is a local symbol-search smoke measurement with uncontrolled cache state. It does not establish the specification's L/S/O targets, cold-index performance, human comprehension gains or p99 latency.
+`atlas benchmark --samples 30 --output report.json` records every latency sample and result status, the exact snapshot, configuration, coverage and basic hardware information. Explicit cold verification time is separate; the OS page cache remains uncontrolled. A deadline-partial result is not a completed empty search. This smoke measurement does not establish L/S/O targets, cold-index performance, human comprehension gains or p99 latency. [Qualification tooling](../../benchmarks/README.md) retains broader real/synthetic measurements and an unfilled human-study protocol.

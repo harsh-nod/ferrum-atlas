@@ -92,6 +92,24 @@ fn pins_heads_recent_grace_and_observations_are_retention_roots() {
 }
 
 #[test]
+fn pin_quota_allows_idempotent_updates_and_releases_capacity() {
+    let _process_guard = crate::tests::process_test_guard();
+    let temp = tempfile::tempdir().unwrap();
+    let store = Store::open(temp.path()).unwrap();
+    let snapshot = store.publish(&batch("one"), "main", None).unwrap();
+    store.connect().unwrap().execute("WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM numbers WHERE n<4096) INSERT INTO snapshot_pins SELECT 'pin-'||n,?1 FROM numbers", [&snapshot.id.0]).unwrap();
+    assert!(matches!(
+        store.pin(&snapshot.id, "extra"),
+        Err(Error::BudgetExhausted)
+    ));
+    store.pin(&snapshot.id, "pin-1").unwrap();
+    assert_eq!(store.pins().unwrap().len(), 4096);
+    store.unpin("pin-1").unwrap();
+    store.pin(&snapshot.id, "extra").unwrap();
+    assert_eq!(store.pins().unwrap().len(), 4096);
+}
+
+#[test]
 fn reader_lifetime_blocks_collection_across_independent_store_handles() {
     let _process_guard = crate::tests::process_test_guard();
     let temp = tempfile::tempdir().unwrap();

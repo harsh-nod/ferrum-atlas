@@ -9,6 +9,7 @@ All data routes require a session bearer token and an allowed request Host/Origi
 | GET /v1/capabilities | Capabilities |
 | GET /v1/snapshots | Snapshot[] |
 | GET /v1/snapshots/{id} | Snapshot |
+| POST /v1/snapshots/{id}/prepare?context_id | SnapshotPreparation; bounded cold verification |
 | POST /v1/snapshots/{id}/pin or /unpin | SnapshotPinState from SnapshotPinRequest |
 | GET /v1/search?snapshot_id&context_id&q&limit&cursor | QueryResponse&lt;Definition&gt; |
 | GET /v1/definitions/{id}?snapshot_id&context_id | DefinitionDetail |
@@ -66,3 +67,9 @@ Job SSE streams accept `Last-Event-ID`, close at terminal status and have an
 eight-stream admission limit. The private durable journal retains 128 jobs and
 32 events per job. A service restart marks interrupted work failed, never silently
 replays it. Unavailable, overloaded, cancelled and failed states remain distinct.
+
+Preparing a snapshot verifies existing immutable bytes with a separate 30-second
+deadline and the same query admission limit. It never captures or analyzes source
+or runs a toolchain. Interactive deadlines are not extended to hide cold checksum
+cost. Clients may prepare a selected snapshot before fact queries; corrupt or
+changed files still fail subsequent reads, and readiness is not a retention pin.

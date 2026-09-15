@@ -36,6 +36,7 @@ jobs:
       - name: Real compiler import workflow
         run: |
           ATLAS_RUSTC="$PWD/adapters/rustc/target/debug/atlas-rustc" cargo test --locked -p ferrum-atlas --test compiler_workflow -- --ignored
+          ATLAS_TEST_COMPILER="$PWD/adapters/rustc/target/debug/atlas-rustc" cargo test --locked -p atlas-evidence actual_pinned_adapter_fixture_passes_strict_import_contract -- --ignored
       - name: Build browser
         working-directory: web
         run: |
@@ -80,6 +81,11 @@ jobs:
         run: cargo test --locked --workspace
       - name: Generated transport contracts
         run: cargo run --locked -p xtask -- check-types
+      - name: Qualification and study validation
+        run: |
+          python3 -m unittest discover -s benchmarks -p 'test_*.py'
+          python3 benchmarks/validate.py report benchmarks/reports/regex-semantic-20260915.json
+          python3 benchmarks/validate.py report benchmarks/reports/synthetic-100k-20260915.json
       - name: Viewer dependencies
         working-directory: web
         run: npm ci

@@ -158,6 +158,12 @@ test("real capture, HTTP, source graph, observations, edit and restart", async (
       expect(compilerImport!.mapped_count).toBeGreaterThanOrEqual(4);
     }
     await start();
+    const prepared = await api<{ ready: boolean; snapshot_id: string }>(
+      `/snapshots/${encodeURIComponent(before.id)}/prepare?context_id=${encodeURIComponent(before.context.id)}`,
+      {},
+    );
+    expect(prepared.ready).toBe(true);
+    expect(prepared.snapshot_id).toBe(before.id);
     const pin = (snapshot: Snapshot) =>
       new URLSearchParams({
         snapshot_id: snapshot.id,
