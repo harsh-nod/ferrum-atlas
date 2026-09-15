@@ -1,4 +1,8 @@
-use crate::{AnalysisLevel, PRODUCER, configuration::Configurations, database};
+use crate::{
+    AnalysisLevel, PRODUCER,
+    configuration::{Configurations, FileConfigurations},
+    database,
+};
 use anyhow::{Result, ensure};
 use atlas_model::*;
 use ra_ap_hir::{Function, ModuleDef, PathResolution, Semantics};
@@ -8,14 +12,14 @@ use ra_ap_syntax::{
     ast::{self, HasName},
 };
 use ra_ap_vfs::FileId as RaFileId;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 struct Item {
     definition: Definition,
     node: SyntaxNode,
     body: Option<SyntaxNode>,
     function: Option<Function>,
-    configuration: String,
+    configuration: usize,
     ambiguous_crate: bool,
     macro_unavailable: bool,
 }
@@ -40,15 +44,13 @@ pub(super) fn extract(
     configurations: &Configurations,
 ) -> Result<FactBatch> {
     let sema = Semantics::new(db);
-    let mut coverage = context.coverage.clone();
-    add_gap(
-        &mut coverage,
+    let mut coverage = CoverageAccumulator::new(context.coverage.clone());
+    coverage.add_gap(
         UnknownReason::UnsupportedConstruct,
         "Source-level extraction excludes implicit drops, compiler lowering, macro expansions, and runtime dispatch targets.",
     );
     if level == AnalysisLevel::Syntax {
-        add_gap(
-            &mut coverage,
+        coverage.add_gap(
             UnknownReason::SyntaxOnly,
             "Syntax analysis makes no semantic target claims.",
         );
@@ -57,6 +59,7 @@ pub(super) fn extract(
     let mut items = Vec::<Item>::new();
     let mut item_indices = HashMap::<SyntaxNode, usize>::new();
     let mut has_unknown_cfg = false;
+    let mut file_configurations = Vec::new();
     for (index, file) in source.files.iter().enumerate() {
         ensure!(
             file.text.len() <= 4 * 1024 * 1024,
@@ -81,8 +84,7 @@ pub(super) fn extract(
             String::new()
         };
         if ambiguous_crate {
-            add_gap(
-                &mut coverage,
+            coverage.add_gap(
                 UnknownReason::CfgUnknown,
                 "A source file belongs to multiple crate instances or module instances; instance-specific definitions and calls remain unknown.",
             );
@@ -91,6 +93,8 @@ pub(super) fn extract(
             .roots
             .get(&configuration)
             .unwrap_or(&configurations.fallback);
+        file_configurations.push(FileConfigurations::new(syntax.syntax(), settings));
+        let node_configuration = &file_configurations[index];
         for error in syntax
             .syntax()
             .descendants()
@@ -125,7 +129,7 @@ pub(super) fn extract(
             if !configuration.is_empty()
                 && matches!(path.as_str(), "cfg" | "cfg_attr")
                 && settings.attr_status(&attr) == CfgStatus::Unknown
-                && settings.node_status(attr.syntax()) != CfgStatus::Inactive
+                && node_configuration.node_status(attr.syntax()) != CfgStatus::Inactive
             {
                 has_unknown_cfg = true;
             }
@@ -154,8 +158,7 @@ pub(super) fn extract(
                         | "non_exhaustive"
                 )
             {
-                add_gap(
-                    &mut coverage,
+                coverage.add_gap(
                     UnknownReason::MacroUnavailable,
                     "Attribute and derive macro output is not captured.",
                 );
@@ -163,8 +166,7 @@ pub(super) fn extract(
         }
         for node in syntax.syntax().descendants() {
             if ast::MacroCall::can_cast(node.kind()) {
-                add_gap(
-                    &mut coverage,
+                coverage.add_gap(
                     UnknownReason::MacroUnavailable,
                     "Macro invocations are recorded without extracting expanded output.",
                 );
@@ -192,20 +194,7 @@ pub(super) fn extract(
                 .trim()
                 .to_owned();
             let body_text = body.as_ref().map(ToString::to_string).unwrap_or_default();
-            let cfg = node
-                .ancestors()
-                .flat_map(|ancestor| {
-                    ancestor
-                        .children()
-                        .filter_map(ast::Attr::cast)
-                        .collect::<Vec<_>>()
-                })
-                .filter(|attr| {
-                    attr.simple_name()
-                        .is_some_and(|name| matches!(name.as_str(), "cfg" | "cfg_attr"))
-                })
-                .map(|attr| attr.to_string())
-                .collect();
+            let cfg = node_configuration.cfg(&node);
             let id = DefinitionId(digest(
                 "definition",
                 &(
@@ -218,10 +207,9 @@ pub(super) fn extract(
                 ),
             ));
             let function = ast::Fn::cast(node.clone()).and_then(|function| sema.to_def(&function));
-            let macro_unavailable = settings.has_attribute_macro(&node);
+            let macro_unavailable = node_configuration.has_attribute_macro(&node);
             if macro_unavailable {
-                add_gap(
-                    &mut coverage,
+                coverage.add_gap(
                     UnknownReason::MacroUnavailable,
                     "An unavailable procedural attribute can change an item's identity or body; its call targets are withheld.",
                 );
@@ -240,7 +228,7 @@ pub(super) fn extract(
                 span: span(file, range),
                 body_span: body.as_ref().map(|body| span(file, body.text_range())),
                 cfg,
-                cfg_status: match settings.node_status(&node) {
+                cfg_status: match node_configuration.node_status(&node) {
                     CfgStatus::Active if configuration.is_empty() => CfgStatus::Unknown,
                     status => status,
                 },
@@ -257,22 +245,20 @@ pub(super) fn extract(
                 node,
                 body,
                 function,
-                configuration: configuration.clone(),
+                configuration: index,
                 ambiguous_crate,
                 macro_unavailable,
             });
         }
     }
     if has_unknown_cfg {
-        add_gap(
-            &mut coverage,
+        coverage.add_gap(
             UnknownReason::CfgUnknown,
             "Unknown custom/target cfg or unresolved dependency features remain three-state. Semantic call targets are withheld until those active conditions have known inputs.",
         );
     }
     if !diagnostics.is_empty() {
-        add_gap(
-            &mut coverage,
+        coverage.add_gap(
             UnknownReason::AnalysisFailed,
             "Broken source remains browsable; syntax errors can limit resolution.",
         );
@@ -312,10 +298,7 @@ pub(super) fn extract(
         if item.definition.cfg_status == CfgStatus::Inactive {
             continue;
         }
-        let settings = configurations
-            .roots
-            .get(&item.configuration)
-            .unwrap_or(&configurations.fallback);
+        let node_configuration = &file_configurations[item.configuration];
         let Some(body) = &item.body else {
             continue;
         };
@@ -336,7 +319,7 @@ pub(super) fn extract(
             .descendants()
             .filter(|node| belongs_to_body(node, &item.node))
         {
-            if settings.node_status(&node) == CfgStatus::Inactive {
+            if node_configuration.node_status(&node) == CfgStatus::Inactive {
                 continue;
             }
             let flow_kind = match node.kind() {
@@ -414,11 +397,7 @@ pub(super) fn extract(
             };
             let limitations = match &target {
                 Target::Unknown { reason, .. } => {
-                    add_gap(
-                        &mut coverage,
-                        reason.clone(),
-                        &format!("Unresolved {label}: {reason:?}"),
-                    );
+                    coverage.add_gap(reason.clone(), &format!("Unresolved {label}: {reason:?}"));
                     vec![format!("{reason:?}")]
                 }
                 _ => vec![],
@@ -457,6 +436,7 @@ pub(super) fn extract(
     relations.sort_by(|a, b| a.id.cmp(&b.id));
     evidence.sort_by(|a, b| a.id.cmp(&b.id));
     flows.sort_by(|a, b| a.definition_id.cmp(&b.definition_id));
+    let mut coverage = coverage.finish();
     coverage.reasons.sort_by(|a, b| a.reason.cmp(&b.reason));
     coverage.limitations.sort();
     coverage.limitations.dedup();
@@ -524,19 +504,46 @@ fn short_label(text: &str) -> String {
         .take(100)
         .collect()
 }
-fn add_gap(coverage: &mut Coverage, reason: UnknownReason, limitation: &str) {
-    coverage.status = Status::Partial;
-    if let Some(count) = coverage
-        .reasons
-        .iter_mut()
-        .find(|entry| entry.reason == reason)
-    {
-        count.count += 1;
-    } else {
-        coverage.reasons.push(ReasonCount { reason, count: 1 });
+struct CoverageAccumulator {
+    coverage: Coverage,
+    limitations: HashSet<String>,
+    #[cfg(test)]
+    lookups: usize,
+}
+
+impl CoverageAccumulator {
+    fn new(coverage: Coverage) -> Self {
+        Self {
+            limitations: coverage.limitations.iter().cloned().collect(),
+            coverage,
+            #[cfg(test)]
+            lookups: 0,
+        }
     }
-    if !coverage.limitations.iter().any(|value| value == limitation) {
-        coverage.limitations.push(limitation.into());
+
+    fn add_gap(&mut self, reason: UnknownReason, limitation: &str) {
+        self.coverage.status = Status::Partial;
+        if let Some(count) = self
+            .coverage
+            .reasons
+            .iter_mut()
+            .find(|entry| entry.reason == reason)
+        {
+            count.count += 1;
+        } else {
+            self.coverage.reasons.push(ReasonCount { reason, count: 1 });
+        }
+        #[cfg(test)]
+        {
+            self.lookups += 1;
+        }
+        if self.limitations.insert(limitation.into()) {
+            self.coverage.limitations.push(limitation.into());
+        }
+    }
+
+    fn finish(self) -> Coverage {
+        self.coverage
     }
 }
 
@@ -596,3 +603,7 @@ fn item_parts(node: &SyntaxNode) -> Option<(&'static str, String, Option<SyntaxN
     named!(Variant, "variant");
     None
 }
+
+#[cfg(test)]
+#[path = "extract/tests.rs"]
+mod tests;

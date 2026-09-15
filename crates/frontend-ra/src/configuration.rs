@@ -2,9 +2,9 @@ use anyhow::{Context, Result};
 use atlas_model::{BuildContext, CfgStatus, SourceSnapshot};
 use ra_ap_cfg::CfgOptions;
 use ra_ap_intern::Symbol;
-use ra_ap_syntax::{AstNode, AstToken, SyntaxNode, ast};
+use ra_ap_syntax::{AstNode, AstToken, SyntaxNode, WalkEvent, ast};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     path::Path,
 };
 
@@ -18,6 +18,129 @@ pub(super) struct Settings {
 pub(super) struct Configurations {
     pub roots: BTreeMap<String, Settings>,
     pub fallback: Settings,
+}
+
+#[derive(Clone, Copy)]
+struct InheritedSettings {
+    status: CfgStatus,
+    macro_unavailable: bool,
+    cfg: Option<usize>,
+}
+
+impl Default for InheritedSettings {
+    fn default() -> Self {
+        Self {
+            status: CfgStatus::Active,
+            macro_unavailable: false,
+            cfg: None,
+        }
+    }
+}
+
+struct CfgAttributes {
+    attributes: Vec<String>,
+    parent: Option<usize>,
+}
+
+/// File-local inherited attributes, computed without rescanning ancestor siblings.
+pub(super) struct FileConfigurations {
+    nodes: HashMap<SyntaxNode, InheritedSettings>,
+    cfg: Vec<CfgAttributes>,
+    #[cfg(test)]
+    node_visits: usize,
+    #[cfg(test)]
+    child_visits: usize,
+}
+
+impl FileConfigurations {
+    pub fn new(root: &SyntaxNode, settings: &Settings) -> Self {
+        let mut cache = Self {
+            nodes: HashMap::new(),
+            cfg: Vec::new(),
+            #[cfg(test)]
+            node_visits: 0,
+            #[cfg(test)]
+            child_visits: 0,
+        };
+        let mut stack = vec![InheritedSettings::default()];
+        for event in root.preorder() {
+            match event {
+                WalkEvent::Enter(node) => {
+                    #[cfg(test)]
+                    {
+                        cache.node_visits += 1;
+                    }
+                    let mut inherited = *stack.last().unwrap();
+                    let mut attributes = Vec::new();
+                    for child in node.children() {
+                        #[cfg(test)]
+                        {
+                            cache.child_visits += 1;
+                        }
+                        let Some(attr) = ast::Attr::cast(child) else {
+                            continue;
+                        };
+                        if let Some(meta) = attr.meta() {
+                            inherited.status = combine(
+                                [inherited.status, settings.meta_status(meta.clone())].into_iter(),
+                                false,
+                            );
+                            inherited.macro_unavailable |= settings.attribute_unavailable(meta);
+                        }
+                        if attr
+                            .simple_name()
+                            .is_some_and(|name| matches!(name.as_str(), "cfg" | "cfg_attr"))
+                        {
+                            attributes.push(attr.to_string());
+                        }
+                    }
+                    if !attributes.is_empty() {
+                        cache.cfg.push(CfgAttributes {
+                            attributes,
+                            parent: inherited.cfg,
+                        });
+                        inherited.cfg = Some(cache.cfg.len() - 1);
+                    }
+                    // Most source nodes have no effective attributes; avoid retaining
+                    // a map entry for the default state on those files.
+                    if inherited.status != CfgStatus::Active
+                        || inherited.macro_unavailable
+                        || inherited.cfg.is_some()
+                    {
+                        cache.nodes.insert(node, inherited);
+                    }
+                    stack.push(inherited);
+                }
+                WalkEvent::Leave(_) => {
+                    stack.pop();
+                }
+            }
+        }
+        cache
+    }
+
+    pub fn node_status(&self, node: &SyntaxNode) -> CfgStatus {
+        self.nodes.get(node).copied().unwrap_or_default().status
+    }
+
+    pub fn has_attribute_macro(&self, node: &SyntaxNode) -> bool {
+        self.nodes
+            .get(node)
+            .copied()
+            .unwrap_or_default()
+            .macro_unavailable
+    }
+
+    pub fn cfg(&self, node: &SyntaxNode) -> Vec<String> {
+        let mut result = Vec::new();
+        let mut current = self.nodes.get(node).and_then(|settings| settings.cfg);
+        while let Some(index) = current {
+            let entry = &self.cfg[index];
+            result.extend(entry.attributes.iter().cloned());
+            current = entry.parent;
+        }
+        result
+    }
 }
 
 impl Configurations {
@@ -130,6 +253,7 @@ fn has_dependency_overrides(manifest: &toml::Value) -> bool {
 }
 
 impl Settings {
+    #[cfg(test)]
     pub fn has_attribute_macro(&self, node: &SyntaxNode) -> bool {
         node.ancestors()
             .flat_map(|node| {
@@ -206,6 +330,7 @@ impl Settings {
         options
     }
 
+    #[cfg(test)]
     pub fn node_status(&self, node: &SyntaxNode) -> CfgStatus {
         combine(
             node.ancestors()
@@ -334,3 +459,7 @@ fn combine(values: impl Iterator<Item = CfgStatus>, any: bool) -> CfgStatus {
         from_bool(!any)
     }
 }
+
+#[cfg(test)]
+#[path = "configuration/tests.rs"]
+mod tests;
