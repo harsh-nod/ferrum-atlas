@@ -1,0 +1,17 @@
+[package]
+name = "atlas-index-stress"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+atlas-model = { path = "../../crates/model" }
+atlas-store = { path = "../../crates/store" }
+atlas-query = { path = "../../crates/query" }
+serde_json = "=1.0.151"
+
+[profile.dev]
+debug = 0
+incremental = false
