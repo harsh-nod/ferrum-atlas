@@ -4,6 +4,7 @@ import type {
   CompilerImportSummary,
   CompilerLocalEffects,
   CompilerSourceMapping,
+  ReachingDefinitions,
 } from "../src/api/types";
 import { coverage, mockApi, relations } from "./fixtures";
 
@@ -243,4 +244,150 @@ test("an unavailable selected compiler body never silently substitutes source fl
   await expect(page.locator(".flow-view .phase-label")).toHaveText(
     "Phase: source",
   );
+});
+
+for (const width of [1440, 390]) {
+  test(`selected dataflow keeps uncertainty, local filters and bounded uses at ${width}`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await mockApi(page);
+    await page.route("**/v1/compiler?*", (route) =>
+      route.fulfill({ json: [imported] }),
+    );
+    await page.route("**/v1/compiler/bodies/*", (route) =>
+      route.fulfill({ json: flow() }),
+    );
+    let requests = 0;
+    const analysis: ReachingDefinitions = {
+      envelope: {
+        algorithm_version: "mir-reaching-definitions-v1",
+        coverage,
+        truncated: false,
+        cancelled: false,
+        deadline_reached: false,
+        assumptions: ["Whole-local fixture only"],
+      },
+      body_id: "body:main",
+      fixed_point: true,
+      iterations: 3,
+      reachable_blocks: [0, 1],
+      definitions: [],
+      uses: Array.from({ length: 201 }, (_, index) => ({
+        local: index === 200 ? 2 : 1,
+        point: { kind: "statement", block: 0, index },
+        reaching: [{ local: 1, point: { kind: "entry" } }],
+        may_be_uninitialized: index === 0,
+        possibly_changed_by_unknown_memory: true,
+      })),
+      unknown_memory_effects: [
+        { point: { kind: "terminator", block: 0 }, effects: ["call"] },
+      ],
+    };
+    await page.route("**/v1/compiler/bodies/*/dataflow?*", (route) => {
+      requests++;
+      expect(new URL(route.request().url()).searchParams.get("import_id")).toBe(
+        imported.id,
+      );
+      return route.fulfill({
+        json: {
+          api_version: "1",
+          snapshot_id: imported.snapshot_id,
+          context_id: imported.context_id,
+          analysis,
+        },
+      });
+    });
+    await open(page);
+    if (width === 390)
+      await page.getByRole("button", { name: "Show graph or flow" }).click();
+    await page.getByLabel("Flow phase").selectOption(imported.id);
+    expect(requests).toBe(0);
+    await page.getByRole("button", { name: "Analyze locals" }).click();
+    await expect(
+      page.getByText("Fixed point reached", { exact: true }),
+    ).toBeVisible();
+    await expect(page.locator(".dataflow-table tbody tr")).toHaveCount(100);
+    await expect(page.locator(".dataflow-table")).toContainText(
+      "Tracking gap on a path",
+    );
+    await page.getByRole("button", { name: "Next dataflow uses" }).click();
+    await expect(page.locator(".dataflow-view")).toContainText(
+      "101-200 of 201 uses",
+    );
+    await page.getByLabel("Dataflow local").selectOption("2");
+    await expect(page.locator(".dataflow-table tbody tr")).toHaveCount(1);
+    await expect(page.locator(".dataflow-table")).toContainText(
+      "Unknown memory effects",
+    );
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+    ).toBe(true);
+    await page.screenshot({ path: test.info().outputPath("dataflow.png") });
+  });
+}
+
+test("dataflow deadline and unavailable errors do not masquerade as empty complete results", async ({
+  page,
+}) => {
+  await mockApi(page);
+  await page.route("**/v1/compiler?*", (route) =>
+    route.fulfill({ json: [imported] }),
+  );
+  await page.route("**/v1/compiler/bodies/*", (route) =>
+    route.fulfill({ json: flow() }),
+  );
+  await page.route("**/v1/compiler/bodies/*/dataflow?*", (route) =>
+    route.fulfill({
+      json: {
+        api_version: "1",
+        snapshot_id: imported.snapshot_id,
+        context_id: imported.context_id,
+        analysis: {
+          envelope: {
+            algorithm_version: "mir-reaching-definitions-v1",
+            coverage,
+            truncated: true,
+            cancelled: false,
+            deadline_reached: true,
+            assumptions: [],
+          },
+          body_id: "body:main",
+          fixed_point: false,
+          iterations: 10,
+          reachable_blocks: [],
+          definitions: [],
+          uses: [],
+          unknown_memory_effects: [],
+        },
+      },
+    }),
+  );
+  await open(page);
+  await page.getByLabel("Flow phase").selectOption(imported.id);
+  await page.getByRole("button", { name: "Analyze locals" }).click();
+  await expect(
+    page.getByText("Fixed point unavailable", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Partial dataflow result", { exact: true }),
+  ).toBeVisible();
+  await expect(page.locator(".dataflow-table")).toHaveCount(0);
+  await page.route("**/v1/compiler/bodies/*/dataflow?*", (route) =>
+    route.fulfill({
+      status: 413,
+      json: {
+        code: "budget_exhausted",
+        message: "Body exceeds 200 blocks",
+        correlation_id: "dataflow-test",
+      },
+    }),
+  );
+  await page.getByRole("button", { name: "Analyze locals" }).click();
+  await expect(page.locator(".dataflow-view [role=alert]")).toContainText(
+    "Body exceeds 200 blocks",
+  );
+  await expect(page.locator(".dataflow-table")).toHaveCount(0);
 });

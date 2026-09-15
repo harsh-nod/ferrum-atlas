@@ -95,6 +95,70 @@ pub(super) async fn compiler_flow(
     })
     .await
 }
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct DataflowParams {
+    snapshot_id: SnapshotId,
+    context_id: ContextId,
+    import_id: String,
+}
+
+pub(super) async fn compiler_dataflow(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(params): Query<DataflowParams>,
+) -> Result<Json<AnalysisResponse<atlas_analysis::ReachingDefinitions>>, HttpError> {
+    let root = state.compiler_dir.clone();
+    let guard = AnalysisGuard {
+        query: QueryControl::new(Duration::from_millis(250)),
+        analysis: AnalysisControl::new(Duration::from_secs(2)),
+    };
+    let control = guard.analysis.clone();
+    perform(state, move |q| {
+        let definition = DefinitionId(id);
+        q.definition(&params.snapshot_id, &params.context_id, &definition)?;
+        let page = atlas_evidence::compiler::flow(
+            &root,
+            &params.snapshot_id,
+            &params.context_id,
+            &definition,
+            &params.import_id,
+            (0, 200),
+        )
+        .map_err(|_| {
+            HttpError::new(
+                StatusCode::NOT_FOUND,
+                "unavailable_evidence",
+                "No compatible complete compiler body is available",
+            )
+        })?;
+        if page.next_offset.is_some() {
+            return Err(HttpError::new(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "budget_exhausted",
+                "Selected dataflow is limited to complete bodies of at most 200 blocks",
+            ));
+        }
+        let analysis = atlas_analysis::reaching_definitions(
+            &page.body,
+            &page.coverage,
+            atlas_analysis::DataflowLimits {
+                max_blocks: 200,
+                ..Default::default()
+            },
+            &control,
+        )
+        .map_err(analysis_error)?;
+        Ok(AnalysisResponse {
+            api_version: API_VERSION.into(),
+            snapshot_id: params.snapshot_id,
+            context_id: params.context_id,
+            analysis,
+        })
+    })
+    .await
+}
 use atlas_analysis::{
     AnalysisControl, AnalysisLimits, GraphAnalysis, PathAnalysis, SelectedGraph,
     TraceCompareRequest, TraceComparison,

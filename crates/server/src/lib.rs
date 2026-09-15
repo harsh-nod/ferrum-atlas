@@ -125,6 +125,10 @@ pub fn router(engine: QueryEngine, config: &ServerConfig) -> anyhow::Result<Rout
         .route("/traces/compare", post(advanced::trace_compare))
         .route("/compiler", get(advanced::compiler_imports))
         .route("/compiler/bodies/{id}", get(advanced::compiler_flow))
+        .route(
+            "/compiler/bodies/{id}/dataflow",
+            get(advanced::compiler_dataflow),
+        )
         .route("/diff", post(diff))
         .route("/flow/{id}", get(flow))
         .route("/bodies/{id}/flow", get(flow))
@@ -801,6 +805,7 @@ mod tests {
             "/v1/traces/id/window",
             "/v1/compiler",
             "/v1/compiler/bodies/id",
+            "/v1/compiler/bodies/id/dataflow",
         ] {
             let response = app
                 .clone()

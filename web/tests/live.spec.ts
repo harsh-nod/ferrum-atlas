@@ -302,6 +302,13 @@ test("real capture, HTTP, source graph, observations, edit and restart", async (
       await expect(page.locator(".compiler-block-table")).toContainText(
         "return",
       );
+      await page.getByRole("button", { name: "Analyze locals" }).click();
+      await expect(
+        page.getByText("Fixed point reached", { exact: true }),
+      ).toBeVisible();
+      await expect(page.locator(".dataflow-table")).toContainText(
+        "Unknown memory effects",
+      );
       await page.screenshot({
         path: testInfo.outputPath("live-compiler-flow.png"),
         fullPage: true,

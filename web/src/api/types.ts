@@ -123,3 +123,17 @@ export type TraceCompareRequest = { before_stream_id: string, after_stream_id: s
 export type TracePosition = { stream_id: string, sequence: string, timestamp: string, clock_domain: string, timestamp_unit: string, };
 export type TraceDivergence = { reason: string, before: TracePosition | null, after: TracePosition | null, before_kind: string | null, after_kind: string | null, };
 export type TraceComparison = { envelope: AnalysisEnvelope, before_artifact: ArtifactIdentity, after_artifact: ArtifactIdentity, anchor: string | null, compared_events: number, matching_prefix_events: number, ambiguous_anchors: Array<string>, first_observed_divergence: TraceDivergence | null, before_loss_count: string, after_loss_count: string, before_interval: string | null, after_interval: string | null, before_clock_domain: string, after_clock_domain: string, before_timestamp_unit: string, after_timestamp_unit: string, };
+export type DataflowLimits = { max_blocks: number, max_locals: number,
+/**
+ * Applies separately to input facts, retained abstract-state facts, and output facts.
+ */
+max_facts: number, max_iterations: number, max_response_bytes: number, };
+export type MirPoint = { "kind": "entry" } | { "kind": "statement", block: number, index: number, } | { "kind": "terminator", block: number, } | { "kind": "normal_return", block: number, target: number, };
+export type LocalDefinition = { local: number, point: MirPoint, };
+export type LocalUse = { local: number, point: MirPoint, reaching: Array<LocalDefinition>,
+/**
+ * An abstract tracking gap on some path, not a Rust undefined-behavior verdict.
+ */
+may_be_uninitialized: boolean, possibly_changed_by_unknown_memory: boolean, };
+export type UnknownMemoryEffect = { point: MirPoint, effects: Array<CompilerUnknownEffect>, };
+export type ReachingDefinitions = { envelope: AnalysisEnvelope, body_id: string, fixed_point: boolean, iterations: number, reachable_blocks: Array<number>, definitions: Array<LocalDefinition>, uses: Array<LocalUse>, unknown_memory_effects: Array<UnknownMemoryEffect>, };

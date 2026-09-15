@@ -12,6 +12,7 @@ import type {
 import { params, request } from "../api/client";
 import { useResource } from "../state";
 import { CoverageNotice, ErrorNotice, IconButton, Loading } from "./common";
+import { DataflowView } from "./DataflowView";
 
 function effects(value: CompilerLocalEffects) {
   return (
@@ -294,6 +295,13 @@ export function CompilerFlowView({
               <ArrowRight size={15} />
             </IconButton>
           </div>
+          {definition && (
+            <DataflowView
+              snapshot={snapshot}
+              definition={definition}
+              importId={importId}
+            />
+          )}
           <details
             onToggle={(event) => setLocalsOpen(event.currentTarget.open)}
           >

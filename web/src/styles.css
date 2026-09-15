@@ -1782,3 +1782,28 @@ code,
     white-space: normal;
   }
 }
+.dataflow-view {
+  border-top: 1px solid #dbe2e6;
+  margin-top: 16px;
+  padding-top: 12px;
+}
+.dataflow-local {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0;
+}
+.dataflow-local select {
+  min-width: 120px;
+  max-width: 100%;
+}
+.dataflow-table {
+  table-layout: fixed;
+  width: 100%;
+}
+.dataflow-table td {
+  overflow-wrap: anywhere;
+}
+.dataflow-table .badge {
+  white-space: normal;
+}
