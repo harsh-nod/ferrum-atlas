@@ -25,12 +25,15 @@ ELF_LIBRARIES = {"libgcc_s.so.1", "libm.so.6", "libc.so.6", "ld-linux-x86-64.so.
 MAX_TOTAL = 512 * 1024 * 1024
 MAX_BINARY = 256 * 1024 * 1024
 MAX_FILES = 8192
+# Historical version-1 archives require these documents; new packages also carry
+# the explicitly selected guides below without invalidating older previews.
 DOCS = (
     "docs/operations/install.md", "docs/operations/local.md",
     "docs/operations/portable-snapshots.md", "docs/operations/retention.md",
     "docs/operations/compiler-and-jobs.md", "docs/dependencies.md",
     "docs/operations/state-machines.md",
 )
+PACKAGED_DOCS = DOCS + ("docs/operations/maintainability.md",)
 VERSION = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-(alpha|beta|rc|preview)\.(0|[1-9][0-9]*)")
 LICENSE_NAME = re.compile(r"^(third[-_ ]?party[-_ ]?)?(licen[sc]es?|copying|copyright|notices?(text)?|unlicense)([-_.].*)?$", re.I)
 NOTICE_SUFFIXES = {"", ".txt", ".md", ".rst", ".html", ".apache", ".mit", ".bsd", ".lesser", ".gpl", ".lgpl", ".0"}
@@ -325,7 +328,7 @@ def package(args):
     files = Payloads()
     files["bin/atlas"] = binary
     files.update(web_files(args.web_dist, files.remaining))
-    for path in DOCS:
+    for path in PACKAGED_DOCS:
         files[path] = read_regular(repo / path, 1024 * 1024)
     for name in ("LICENSE-MIT", "LICENSE-APACHE"):
         files[f"share/licenses/ferrum-atlas/{name}"] = read_regular(repo / name, 1024 * 1024)
@@ -386,7 +389,7 @@ def package(args):
 def allowed_member(name):
     if name in ("RELEASE.json", "SHA256SUMS", "bin/atlas", "share/ferrum-atlas/schema-compatibility.json", "share/ferrum-atlas/dependency-inventory.json"):
         return True
-    if name in DOCS:
+    if name in PACKAGED_DOCS:
         return True
     if name in ("share/licenses/ferrum-atlas/LICENSE-MIT", "share/licenses/ferrum-atlas/LICENSE-APACHE"):
         return True

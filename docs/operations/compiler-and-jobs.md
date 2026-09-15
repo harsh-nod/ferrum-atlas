@@ -4,7 +4,8 @@
 
 The optional adapter is a separate workspace with one supported compiler:
 `nightly-2026-04-03`, commit `55e86c996809902e8bbad512cfb4d2c18be446d9`,
-Linux x86_64. See its [producer contract](../../adapters/rustc/README.md).
+Linux x86_64. See the [online source-checkout producer contract](https://github.com/harsh-nod/ferrum-atlas/blob/606b519f0812208bb311cc468e9cb539ea5e0f39/adapters/rustc/README.md);
+the adapter and that reference are not bundled with the application.
 It runs only with explicit `--trusted-local` approval. It is not a hostile-code
 sandbox and never runs automatically when opening a snapshot or browser view.
 

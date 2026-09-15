@@ -45,7 +45,7 @@ class ReleaseTests(unittest.TestCase):
         self.write("web/node_modules/viewer-dependency/package.json", json.dumps({"name": "viewer-dependency", "version": "1.0.0"}))
         self.write("web/node_modules/viewer-dependency/LICENSE", "Viewer dependency license and copyright\n")
         self.write("scripts/release-schema.json", SCRIPT.with_name("release-schema.json").read_text())
-        for document in release.DOCS:
+        for document in release.PACKAGED_DOCS:
             self.write(document, "Operation documentation fixture\n")
         for license_name in ("LICENSE-MIT", "LICENSE-APACHE"):
             self.write(license_name, "Project license fixture\n")
@@ -114,10 +114,49 @@ class ReleaseTests(unittest.TestCase):
         self.write(".atlas/source.sqlite", "PRIVATE_SOURCE")
         self.write("src/secret.rs", "PRIVATE_SOURCE")
         self.write("dependency/README.md", "PRIVATE_SOURCE")
+        self.write("docs/operations/private-notes.md", "PRIVATE_SOURCE")
         archive = release.package(self.args)
         for _, payload in self.members(archive):
             self.assertNotIn(b"SUPER_SECRET_TOKEN", payload)
             self.assertNotIn(b"PRIVATE_SOURCE", payload)
+
+    def test_metric_guide_is_packaged_but_older_previews_still_validate(self):
+        guide = "docs/operations/maintainability.md"
+        content = (SCRIPT.parents[1] / guide).read_bytes()
+        self.write(guide, content)
+        archive = release.package(self.args)
+        manifest = release.validate(archive)
+        self.assertEqual(manifest["files"][guide], {"bytes": len(content), "sha256": release.sha(content)})
+        members = {member.name.partition("/")[2]: payload for member, payload in self.members(archive)}
+        self.assertEqual(members[guide], content)
+        self.assertIn(b"## Compiler CFG Measure", content)
+        self.assertIn(b"## Meaning And Limits", content)
+        self.args.output = self.root / "older-preview"
+        older = self.altered(lambda members: members.__setitem__(slice(None), [item for item in members if not item[0].name.endswith("/" + guide)]), reseal=True)
+        self.assertNotIn(guide, release.validate(older)["files"])
+        (self.repo / guide).unlink()
+        self.args.output = self.root / "missing-guide"
+        with self.assertRaises((ValueError, FileNotFoundError)):
+            release.package(self.args)
+
+    def test_packaged_external_references_are_explicit_and_commit_pinned(self):
+        root = "https://github.com/harsh-nod/ferrum-atlas/blob/606b519f0812208bb311cc468e9cb539ea5e0f39/"
+        references = (
+            ("docs/dependencies.md", "docs/milestones/package-verification.md", "online source-checkout package verification reference", "(milestones/package-verification.md)"),
+            ("docs/operations/local.md", "benchmarks/README.md", "online source-checkout qualification reference", "(../../benchmarks/README.md)"),
+            ("docs/operations/compiler-and-jobs.md", "adapters/rustc/README.md", "online source-checkout producer contract", "(../../adapters/rustc/README.md)"),
+        )
+        for document, target, label, old in references:
+            with self.subTest(document=document):
+                content = (SCRIPT.parents[1] / document).read_text()
+                self.assertIn(f"[{label}]({root}{target})", content)
+                self.assertIn("not bundled with the application", " ".join(content.split()))
+                self.assertNotIn(old, content)
+                self.write(document, content)
+        archive = release.package(self.args)
+        members = {member.name.partition("/")[2]: payload for member, payload in self.members(archive)}
+        for document, target, label, _ in references:
+            self.assertIn(f"[{label}]({root}{target})".encode(), members[document])
 
     def test_viewer_source_maps_and_unexpected_paths_are_rejected(self):
         for name in ("assets/main.js.map", "token.json", ".atlas/source.sqlite", "assets/nested/private.js"):

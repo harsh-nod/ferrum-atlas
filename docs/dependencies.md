@@ -105,8 +105,9 @@ The packaging workflow now collects actual dependency notice files and pinned
 supplements. Its inventory is distinct from this declared-license summary.
 [Installation and distribution gates](operations/install.md) explicitly retain
 the unpassed ELK preferred-source/source-availability and Rust sysroot-linked
-notice reviews. The [downloaded package check](milestones/package-verification.md)
-establishes runtime/shape checks, not licensing approval.
+notice reviews. The [online source-checkout package verification reference](https://github.com/harsh-nod/ferrum-atlas/blob/606b519f0812208bb311cc468e9cb539ea5e0f39/docs/milestones/package-verification.md)
+establishes runtime/shape checks, not licensing approval; that reference is not
+bundled with the application.
 
 ## Advisory Scan Results
 
