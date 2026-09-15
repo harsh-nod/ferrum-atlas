@@ -33,6 +33,7 @@ clap = { version = "=4.6.6", features = ["derive"] }
 rusqlite = { version = "=0.40.2", features = ["bundled"] }
 tempfile = "=3.27.0"
 ra_ap_syntax = "=0.0.349"
+ra_ap_parser = "=0.0.349"
 ra_ap_hir = "=0.0.349"
 ra_ap_ide_db = "=0.0.349"
 ra_ap_base_db = "=0.0.349"

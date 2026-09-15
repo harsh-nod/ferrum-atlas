@@ -146,3 +146,21 @@ export type StateMachineSyntax = { span: Span, text: string, };
 export type StateMachineUnknown = { span: Span, reason: string, };
 export type StateTransitionDecision = "accepted" | "rejected";
 export type StateTransitionReview = { input_digest: string, candidate_id: string, reviewer: string, note: string, decision: StateTransitionDecision, };
+export type MaintainabilityLimits = { max_source_bytes: number, max_nodes: number, max_tokens: number,
+/**
+ * Independently bounds each collection of source locations.
+ */
+max_locations: number, max_response_bytes: number, };
+export type SyntaxMetrics = { source_lines: number, lexical_tokens: number, max_nesting: number, unsafe_boundaries: number, };
+export type NestingSite = { kind: string, depth: number, span: Span, };
+export type UnsafeBoundary = { kind: string, keyword_span: Span, boundary_span: Span,
+/**
+ * Nearest lexical unsafe boundary, not dynamic scope or a safety proof.
+ */
+enclosing_boundary: Span | null, };
+export type MetricUnknown = { span: Span, reason: string, };
+export type SourceMaintainability = { envelope: AnalysisEnvelope, input_digest: string, definition_id: DefinitionId, span: Span, body_span: Span, visited_nodes: number, visited_tokens: number,
+/**
+ * Present only after both complete lexical and syntax traversals.
+ */
+metrics: SyntaxMetrics | null, locations_truncated: boolean, code_lines: Array<Span>, nesting_sites: Array<NestingSite>, unsafe_sites: Array<UnsafeBoundary>, unknowns: Array<MetricUnknown>, };

@@ -93,6 +93,7 @@ dependencies = [
  "atlas-ingest",
  "atlas-model",
  "petgraph",
+ "ra_ap_parser",
  "ra_ap_syntax",
  "serde",
  "serde_json",
