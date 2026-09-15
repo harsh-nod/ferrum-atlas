@@ -1,10 +1,12 @@
 //! Deterministic, bounded interpretations over explicitly selected facts.
 mod dataflow;
 mod graph;
+mod maintainability;
 mod state_machine;
 mod trace;
 pub use dataflow::*;
 pub use graph::*;
+pub use maintainability::*;
 pub use state_machine::*;
 pub use trace::*;
 
@@ -169,7 +171,13 @@ pub fn typescript() -> String {
         StateMachineSyntax,
         StateMachineUnknown,
         StateTransitionDecision,
-        StateTransitionReview
+        StateTransitionReview,
+        MaintainabilityLimits,
+        SyntaxMetrics,
+        NestingSite,
+        UnsafeBoundary,
+        MetricUnknown,
+        SourceMaintainability
     );
     output
 }
