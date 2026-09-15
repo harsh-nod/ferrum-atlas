@@ -58,7 +58,7 @@ semantics, executable-code isolation or organization-scale deployment.
 | 15: Tests/traces | Exact artifact imports, eight outcomes, wide counters, independent clocks, loss and bounded anchor comparisons | Debug/address/load-map/inline-frame symbolization, richer run-input/log/payload contracts, replay integration and real MEC acceptance |
 | 16: Security | No repository execution in read-only mode; loopback authorization/origin/host checks, bounded inputs, descriptor-based storage and defensive tests | Hostile executable OS isolation and dependency broker; authenticated hosted identities/ACLs, tenant quotas/encryption/audit and multi-tenant isolation |
 | 17: Correctness | Independent hand-authored semantic expectations, faulty-producer mutations, graph/dataflow oracles, process crash/recovery and browser tests | Expanded language corpus, compiler-version matrix and deployment-scale failure drills |
-| 19-23: Delivery | Public repository created before implementation, isolated agent worktrees, focused commits, CI and tracked task issues | Remaining roadmap issues retain their open acceptance gates |
+| 19-23: Delivery | Public repository created before implementation, isolated agent worktrees, focused commits, CI and tracked task issues | Source metric/state-machine traversals still directly import the pinned analyzer parser/syntax crates outside frontend-ra; restoring the prescribed adapter dependency boundary and remaining roadmap acceptance gates stay open |
 | 24: Operations | Local limits, recovery, retention, consistent stopped-writer backup, portable restore, toolchain and trust documentation | Qualified local release criteria and organization-scale release remain unmet; portable restore omits compiler imports and state reviews, which require whole-store backup; packaging is not qualification |
 
 Optional interprocedural dataflow and optional LLM explanations are not silently
@@ -90,10 +90,11 @@ advisory checks, distributed notices and the remaining release license review.
 
 ## Completion Evidence
 
-The runtime integration at `606b519f0812208bb311cc468e9cb539ea5e0f39` passed
-[cloud CI](https://github.com/harsh-nod/ferrum-atlas/actions/runs/34955346401),
+The application and packaging integration at
+`1e19f972c1aedf85ad76999c50784ab5f9688b49` passed
+[cloud CI](https://github.com/harsh-nod/ferrum-atlas/actions/runs/34956569046),
 including the exact-nightly compiler job. Local verification was repeated after
-the final compiler-evidence cancellation fixes:
+the compiler-evidence cancellation fixes and final viewer changes:
 
 - Workspace Rust tests: 278 passed; two adapter-dependent tests were initially
   ignored and then explicitly invoked against the pinned adapter, both passing.

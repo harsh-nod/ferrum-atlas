@@ -1,5 +1,46 @@
 # Local Package Verification
 
+## Preview 3
+
+On 2026-09-15, [workflow 34956575490](https://github.com/harsh-nod/ferrum-atlas/actions/runs/34956575490)
+built Linux x86_64 `0.1.0-preview.3` from source commit
+`1e19f972c1aedf85ad76999c50784ab5f9688b49`. Both the package workflow and
+[source CI](https://github.com/harsh-nod/ferrum-atlas/actions/runs/34956569046)
+succeeded. No tag, GitHub release or draft was created. This is a time-limited
+Actions review artifact, not a qualified release.
+
+Archive: `ferrum-atlas-0.1.0-preview.3-x86_64-unknown-linux-gnu.tar.gz`
+
+SHA-256: `f6fdfd51fc4c31abd24df0d843266be67541d0bd7a94b18ac866623141112e04`
+
+Verification of this exact candidate:
+
+- The cloud workflow ran 31 packaging regressions, validated the archive, checked
+  its sidecar digest, extracted it and passed the live capture/HTTP/browser/edit/
+  restart regression against the bundled CLI and viewer before uploading it.
+  That cloud package check omitted the optional compiler adapter, which is not
+  bundled. The separate source CI pinned-compiler job passed.
+- Local validation of the downloaded archive passed for 501 payload files;
+  `sha256sum --check` independently passed before fresh-directory extraction.
+- The archive includes the source/CFG metrics guide and fixes the three broken
+  offline references from preview 2 with explicitly online, commit-pinned links.
+- The installed binary returned `atlas 0.1.0`, and installed `doctor` verified
+  both demonstration snapshots with no errors.
+- The local live regression passed using this installed binary, this bundled
+  viewer and the separately built pinned compiler. Actual compiler import,
+  reaching definitions, source/CFG measurements, exact source navigation,
+  observations, state-review fixture records and restart all passed. Its graph
+  canvas was nonblank and no browser page errors were reported.
+- No development web server was started for installed-package checks. The
+  regression stopped its own temporary application server and removed its
+  temporary fixture and store. The separate development demo remains separate.
+
+The workflow emitted GitHub's deprecation annotation for pinned actions declaring
+Node 20; GitHub ran those actions on Node 24 successfully. This is not future
+action-runtime qualification. Remaining license/distribution, scale, isolation
+and human-study gates are unchanged. Later documentation-only corrections are
+not covered by this archive hash.
+
 ## Preview 2
 
 On 2026-09-15, [workflow 34955364397](https://github.com/harsh-nod/ferrum-atlas/actions/runs/34955364397)
