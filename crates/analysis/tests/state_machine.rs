@@ -606,3 +606,27 @@ fn syntax_and_hard_input_budgets_withhold_or_reject_explicitly() {
         AnalysisError::BudgetExhausted
     );
 }
+
+#[test]
+fn nested_reference_scan_distinguishes_selected_and_unrelated_local_ranges() {
+    let reference = "&".repeat(128);
+    let unrelated = SIMPLE.replacen(
+        "{ match state",
+        &format!("{{ let unrelated = {reference}other; match state"),
+        1,
+    );
+    let report = run(&unrelated, StateMachineLimits::default());
+    assert_eq!(report.candidates.len(), 2);
+    assert!(!report.envelope.truncated);
+    let selected = unrelated.replace(&format!("{reference}other"), &format!("{reference}state"));
+    let report = run(&selected, StateMachineLimits::default());
+    assert!(report.candidates.is_empty());
+    assert_eq!(report.unknowns.len(), 100);
+    assert!(report.envelope.truncated);
+    assert!(
+        report
+            .unknowns
+            .iter()
+            .all(|unknown| unknown.reason.contains("References or aliases"))
+    );
+}

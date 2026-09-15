@@ -397,6 +397,8 @@ pub fn infer_state_machine(
         .ok_or_else(|| invalid("selected function has no statement list"))?;
     let state = &state_parts[0];
     let mut bindings = vec![];
+    let mut references = vec![];
+    let mut selected_paths = vec![];
     let mut unsafe_binding = false;
     // Finish the bounded binding prepass before emitting candidates: a later shadow or macro
     // must not retroactively invalidate an already-emitted local-identity assumption.
@@ -439,20 +441,13 @@ pub fn infer_state_machine(
                 limits,
             );
         }
-        if let Some(reference) = ast::RefExpr::cast(node.clone())
-            && reference
-                .syntax()
-                .descendants()
-                .filter_map(ast::PathExpr::cast)
-                .any(|path| path.path().and_then(path_parts).as_ref() == Some(&state_parts))
+        if ast::RefExpr::can_cast(node.kind()) {
+            references.push(span(&node, definition));
+        }
+        if let Some(path) = ast::PathExpr::cast(node.clone())
+            && path.path().and_then(path_parts).as_ref() == Some(&state_parts)
         {
-            unsafe_binding = true;
-            unknown(
-                &mut report,
-                span(&node, definition),
-                "References or aliases of the selected local are unsupported",
-                limits,
-            );
+            selected_paths.push(span(&node, definition));
         }
         if let Some(local) = ast::LetStmt::cast(node.clone())
             && local.initializer().and_then(expr_path).as_ref() == Some(&state_parts)
@@ -462,6 +457,27 @@ pub fn infer_state_machine(
                 &mut report,
                 span(&node, definition),
                 "Local copies or aliases of the selected state are unsupported",
+                limits,
+            );
+        }
+    }
+    // Interval lookup avoids walking the same subtree for every nested reference.
+    selected_paths.sort_by_key(|path| (path.start, path.end));
+    for reference in references {
+        if control.stopped() {
+            report.envelope.stop(control);
+            return finish(report, limits);
+        }
+        let index = selected_paths.partition_point(|path| path.start < reference.start);
+        if selected_paths
+            .get(index)
+            .is_some_and(|path| path.end <= reference.end)
+        {
+            unsafe_binding = true;
+            unknown(
+                &mut report,
+                reference,
+                "References or aliases of the selected local are unsupported",
                 limits,
             );
         }
