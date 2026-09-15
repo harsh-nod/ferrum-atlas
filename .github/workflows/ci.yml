@@ -87,6 +87,8 @@ jobs:
           python3 benchmarks/validate.py report benchmarks/reports/regex-semantic-20260915.json
           python3 benchmarks/validate.py report benchmarks/reports/synthetic-100k-20260915.json
           python3 benchmarks/validate.py report benchmarks/reports/synthetic-100k-cached-20260915.json
+          python3 benchmarks/validate.py report benchmarks/reports/regex-cached-20260915.json
+          python3 benchmarks/validate.py report benchmarks/reports/regex-cached-warm-20260915.json
       - name: Viewer dependencies
         working-directory: web
         run: npm ci
