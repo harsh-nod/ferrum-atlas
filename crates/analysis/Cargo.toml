@@ -1,0 +1,18 @@
+[package]
+name = "atlas-analysis"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+atlas-model.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+ts-rs.workspace = true
+petgraph = "=0.8.3"
+
+[dev-dependencies]
+atlas-frontend.workspace = true
+atlas-ingest.workspace = true
+tempfile.workspace = true

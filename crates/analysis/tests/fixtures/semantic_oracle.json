@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "provenance": "Hand-authored expected call sites, independently constrained by distinct compiler/runtime return values; not generated from frontend output",
+  "calls": [
+    { "caller": "src::lib::entry", "text": "selected()", "target": "src::lib::left::same", "unknown": null },
+    { "caller": "src::lib::entry", "text": "right::same()", "target": "src::lib::right::same", "unknown": null },
+    { "caller": "src::lib::entry", "text": "Engine.step()", "target": "src::lib::impl Engine::step", "unknown": null },
+    { "caller": "src::lib::callback_boundary", "text": "pointer()", "target": null, "unknown": "indirect_target_unknown" },
+    { "caller": "src::lib::recursive", "text": "recursive(depth - 1)", "target": "src::lib::recursive", "unknown": null }
+  ]
+}
