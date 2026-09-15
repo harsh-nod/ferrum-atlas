@@ -1,5 +1,6 @@
 //! Imported observations remain separate from extracted static evidence.
 pub mod compiler;
+pub mod state_machine;
 use anyhow::{Context, Result, ensure};
 use atlas_model::*;
 use sha2::{Digest, Sha256};

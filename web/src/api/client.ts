@@ -156,7 +156,7 @@ async function requestScopes(
     )
   )
     return [];
-  const query = record(input.graph ?? input);
+  const query = record(input.graph ?? input.selection ?? input);
   const snapshot = url.searchParams.get("snapshot_id") ?? query.snapshot_id;
   const context = url.searchParams.get("context_id") ?? query.context_id;
   return typeof snapshot === "string" && typeof context === "string"

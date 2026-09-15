@@ -1,5 +1,8 @@
 # Local Implementation Report
 
+Historical checkpoint. See the [current specification inventory](specification-status.md)
+and [expanded qualification evidence](qualification-next.md) for later work.
+
 Validated on 2026-09-15 UTC against implementation commit [`2cd55d2`](https://github.com/harsh-nod/ferrum-atlas/commit/2cd55d2cf907214b2cbc30fb4563c9d0810d2482). This report documents the working local, read-only implementation. It does not declare the entire [specification](../../rust_analyzer_and_visualizer.md) complete.
 
 The public repository was created before implementation. Separate agents implemented and reviewed the frontend adapter, storage/query engine, and browser; the primary agent integrated changes, implemented the CLI/server/evidence pipeline, and ran cross-module verification. Progress was published in incremental commits.

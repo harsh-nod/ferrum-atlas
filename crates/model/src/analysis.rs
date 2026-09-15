@@ -12,6 +12,22 @@ pub struct AnalysisResponse<T> {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
+pub struct StateMachineSelection {
+    pub snapshot_id: SnapshotId,
+    pub context_id: ContextId,
+    pub enum_path: String,
+    pub state_place: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct StateMachineReviewRequest<T> {
+    pub selection: StateMachineSelection,
+    pub review: T,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
 pub struct PathRequest {
     pub graph: GraphRequest,
     pub target: Option<DefinitionId>,

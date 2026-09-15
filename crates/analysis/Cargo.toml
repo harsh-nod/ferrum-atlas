@@ -10,6 +10,7 @@ atlas-model.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 ts-rs.workspace = true
+ra_ap_syntax.workspace = true
 petgraph = "=0.8.3"
 
 [dev-dependencies]

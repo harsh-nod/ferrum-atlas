@@ -16,7 +16,9 @@ artifacts. Repository source and manifest contents are intentionally included
 without redaction; review them before sharing an export.
 
 Portable version 1 does not include separately imported compiler bundles or
-their derived MIR CFG/dataflow results. Preserve those bundles separately and
+their derived MIR CFG/dataflow results, or state-transition review declarations.
+Use a consistent whole-store backup to preserve review declarations and pins.
+Preserve compiler bundles separately and
 reimport them against the restored snapshot using `atlas import-compiler`.
 The importer revalidates their exact source and context identities; restoring
 a portable snapshot alone must not be interpreted as restoring compiler evidence.

@@ -78,6 +78,45 @@ turn unknown or missing transitions into impossible ones. The analysis library
 does not persist or merge reviews. The service owns separately scoped immutable
 review storage, authorization and retention.
 
+## Local API And Retention
+
+The source-flow view exposes an explicit enum-path and state-variable selection.
+Nothing runs until `Analyze states` is requested. The local API is:
+
+- `POST /v1/analysis/state-machine/:definition` with `StateMachineSelection`.
+- `GET /v1/analysis/state-machine/:definition/reviews` with the same selection
+  fields as query parameters.
+- `POST /v1/analysis/state-machine/:definition/reviews` with
+  `StateMachineReviewRequest<StateTransitionReview>`.
+
+Every path requires the session token and authorizes the snapshot/context before
+source or review I/O. API source input is a complete, checksum-verified file of
+at most 256 KiB. Inference has a two-second cooperative deadline; review read/write
+recomputes the exact inference and refuses cancelled or truncated candidate sets.
+An ordinary syntax-only partial coverage result remains reviewable when its
+selected syntactic traversal was not truncated. No repository tools execute.
+
+Reviews are immutable, checksummed records in the store's
+`observations/state-reviews/` subtree, separate from compiler and observation
+bundles. Identical declarations deduplicate. Contradictory declarations remain
+separate, unordered reviewer statements; the service does not infer a latest or
+authoritative consensus. Reviewer names are self-declared in the single-user
+local session, not independently authenticated identities.
+
+The storage limit is 100 declarations per snapshot/context, 16 KiB per stored
+record. Private descriptor-relative directories, non-following regular-file
+reads, a private cancellable lock and atomic no-replace publication protect the
+objects. Cancellation checks include lock waits and publication checkpoints;
+stalled kernel filesystem calls are not preemptible. A cancellation racing a
+completed rename may leave a valid record, never a partial or rolled-back one.
+Retrying the identical request is safe.
+
+Recording first creates a scoped retention pin named `state-reviews`. A failed
+write can leave this conservative pin; inspect `atlas pins` before releasing it
+with `atlas unpin --name NAME`. Keep it while any declaration remains useful.
+Back up the complete store to preserve declarations and pins. Portable snapshot
+version 1 does not include these optional reviews; it is not a review backup.
+
 ## Verification
 
 The independent hand-authored fixture oracle asserts exact transition targets

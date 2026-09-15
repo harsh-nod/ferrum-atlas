@@ -19,4 +19,6 @@ tokio.workspace = true
 tower.workspace = true
 tower-http.workspace = true
 [dev-dependencies]
+atlas-frontend.workspace = true
+atlas-ingest.workspace = true
 tempfile.workspace = true

@@ -482,6 +482,8 @@ pub fn typescript() -> String {
     );
     emit!(
         AnalysisResponse<Definition>,
+        StateMachineSelection,
+        StateMachineReviewRequest<Definition>,
         PathRequest,
         TraceAlignmentRequest,
         TraceAlignmentResponse<Definition>

@@ -1,9 +1,11 @@
 //! Deterministic, bounded interpretations over explicitly selected facts.
 mod dataflow;
 mod graph;
+mod state_machine;
 mod trace;
 pub use dataflow::*;
 pub use graph::*;
+pub use state_machine::*;
 pub use trace::*;
 
 use atlas_model::{Coverage, ReasonCount, Status, UnknownReason};
@@ -160,7 +162,14 @@ pub fn typescript() -> String {
         LocalDefinition,
         LocalUse,
         UnknownMemoryEffect,
-        ReachingDefinitions
+        ReachingDefinitions,
+        StateMachineLimits,
+        StateMachineInference,
+        StateTransitionCandidate,
+        StateMachineSyntax,
+        StateMachineUnknown,
+        StateTransitionDecision,
+        StateTransitionReview
     );
     output
 }

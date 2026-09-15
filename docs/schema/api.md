@@ -83,3 +83,20 @@ deadline and the same query admission limit. It never captures or analyzes sourc
 or runs a toolchain. Interactive deadlines are not extended to hide cold checksum
 cost. Clients may prepare a selected snapshot before fact queries; corrupt or
 changed files still fail subsequent reads, and readiness is not a retention pin.
+
+## State Transition Review
+
+`POST /v1/analysis/state-machine/:definition` accepts `StateMachineSelection`
+and returns `AnalysisResponse<StateMachineInference>`. It is opt-in, syntax-only,
+bounded to one exact function in a complete source file of at most 256 KiB.
+Candidates and unknowns never imply an exhaustive machine or semantic resolution.
+
+`GET /v1/analysis/state-machine/:definition/reviews` takes the selection as query
+parameters. `POST` to the same path accepts
+`StateMachineReviewRequest<StateTransitionReview>`. Both recompute the selected
+inference. A cancelled, deadline-limited or truncated re-inference returns
+`408 budget_exhausted`, not an assertion that saved evidence is corrupt or absent.
+Accepted/rejected declarations bind exact candidate and input digests, persist
+separately, and do not upgrade coverage. Authentication and snapshot/context
+authorization precede every fact or review read. See
+[state-machine operations](../operations/state-machines.md) for limits and pins.

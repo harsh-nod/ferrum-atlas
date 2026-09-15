@@ -76,6 +76,19 @@ test("concurrent fact queries share one scope preparation and metadata/jobs/pins
       context_id: "other",
       name: "test",
     });
+    await request(
+      "/analysis/state-machine/d/reviews",
+      new AbortController().signal,
+      {
+        selection: {
+          snapshot_id: "s",
+          context_id: "c",
+          enum_path: "State",
+          state_place: "state",
+        },
+        review: { input_digest: "inference:test" },
+      },
+    );
   });
   expect(events[0]).toBe("prepare");
   expect(events.filter((item) => item === "prepare")).toHaveLength(1);

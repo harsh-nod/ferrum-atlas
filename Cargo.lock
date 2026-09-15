@@ -93,6 +93,7 @@ dependencies = [
  "atlas-ingest",
  "atlas-model",
  "petgraph",
+ "ra_ap_syntax",
  "serde",
  "serde_json",
  "tempfile",
@@ -104,8 +105,10 @@ name = "atlas-evidence"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "atlas-analysis",
  "atlas-model",
  "rustix",
+ "serde",
  "serde_json",
  "sha2",
  "tempfile",
@@ -187,6 +190,8 @@ dependencies = [
  "anyhow",
  "atlas-analysis",
  "atlas-evidence",
+ "atlas-frontend",
+ "atlas-ingest",
  "atlas-model",
  "atlas-query",
  "atlas-scheduler",

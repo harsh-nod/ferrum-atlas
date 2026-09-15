@@ -1807,3 +1807,53 @@ code,
 .dataflow-table .badge {
   white-space: normal;
 }
+.state-machine-view {
+  border-top: 1px solid #d8dfe5;
+}
+.state-machine-view h3 {
+  font-size: 14px;
+  margin: 0 0 12px;
+}
+.state-machine-view pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-width: 100%;
+  font-size: 12px;
+}
+.state-review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.state-machine-view .analysis-table td {
+  overflow-wrap: anywhere;
+}
+.state-machine-view .analysis-table {
+  min-width: 0;
+  table-layout: fixed;
+}
+.state-machine-view .analysis-table th:first-child {
+  min-width: 0;
+}
+@media (max-width: 600px) {
+  .state-machine-view .analysis-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+  .state-machine-view .analysis-table,
+  .state-machine-view .analysis-table tbody,
+  .state-machine-view .analysis-table tr,
+  .state-machine-view .analysis-table td {
+    display: block;
+    width: 100%;
+  }
+  .state-machine-view .analysis-table td::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 6px;
+    font-weight: 600;
+  }
+}

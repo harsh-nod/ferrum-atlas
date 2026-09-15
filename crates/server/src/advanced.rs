@@ -182,7 +182,7 @@ impl Drop for AnalysisGuard {
         self.analysis.cancel();
     }
 }
-fn analysis_error(error: atlas_analysis::AnalysisError) -> HttpError {
+pub(super) fn analysis_error(error: atlas_analysis::AnalysisError) -> HttpError {
     match error {
         atlas_analysis::AnalysisError::InvalidInput(_) => HttpError::new(
             StatusCode::BAD_REQUEST,

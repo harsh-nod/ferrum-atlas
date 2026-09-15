@@ -15,6 +15,7 @@ import type {
   ObservationSummary,
   ObservationWindow,
   JobRecord,
+  StateTransitionReview,
 } from "../src/api/types";
 
 test("real capture, HTTP, source graph, observations, edit and restart", async ({
@@ -117,7 +118,7 @@ test("real capture, HTTP, source graph, observations, edit and restart", async (
       "[package]\nname='live_pilot'\nversion='0.1.0'\nedition='2021'\n",
     );
     const original =
-      "pub mod engine;\r\npub fn entry(value: u32) -> u32 { engine::step(value) }\r\npub fn callback(value: u32, operation: fn(u32) -> u32) -> u32 { operation(value) }\r\n";
+      "pub mod engine;\r\npub fn entry(value: u32) -> u32 { engine::step(value) }\r\npub fn callback(value: u32, operation: fn(u32) -> u32) -> u32 { operation(value) }\r\npub enum MachineState { Idle, Ready }\r\npub fn state_event(mut state: MachineState) { match state { MachineState::Idle => { state = MachineState::Ready; }, MachineState::Ready => { state = MachineState::Idle; } } }\r\n";
     await writeFile(join(workspace, "src/lib.rs"), original);
     await writeFile(
       join(workspace, "src/engine.rs"),
@@ -179,6 +180,11 @@ test("real capture, HTTP, source graph, observations, edit and restart", async (
       (definition) => definition.name === "callback",
     )!;
     expect(entry).toBeDefined();
+    const stateEvent = definitions.items.find(
+      (definition) => definition.name === "state_event",
+    )!;
+    expect(stateEvent).toBeDefined();
+    const reviewQuery = `/analysis/state-machine/${encodeURIComponent(stateEvent.id)}/reviews?${pin(before)}&enum_path=MachineState&state_place=state`;
     const graph = await api<GraphResponse>("/graph/neighborhood", {
       snapshot_id: before.id,
       context_id: before.context.id,
@@ -337,6 +343,42 @@ test("real capture, HTTP, source graph, observations, edit and restart", async (
       await page.getByRole("button", { name: "Explore", exact: true }).click();
     }
 
+    await page.goto(
+      `${base}/?snapshot=${encodeURIComponent(before.id)}&context=${encodeURIComponent(before.context.id)}&definition=${encodeURIComponent(stateEvent.id)}&view=flow`,
+    );
+    const statePanel = page.getByRole("region", {
+      name: "State transition review",
+    });
+    await statePanel.getByLabel("Enum path").fill("MachineState");
+    await statePanel.getByLabel("State variable").fill("state");
+    await statePanel.getByRole("button", { name: "Analyze states" }).click();
+    await expect(
+      statePanel.getByRole("button", { name: "Idle to Ready" }),
+    ).toBeVisible();
+    await statePanel
+      .getByLabel("Declared reviewer")
+      .fill("Live fixture reviewer");
+    await statePanel
+      .getByLabel("Review note")
+      .fill("Direct assignment checked; no completeness claim");
+    await statePanel
+      .getByRole("button", { name: "Accept candidate" })
+      .first()
+      .click();
+    await expect(
+      statePanel.getByText(
+        "accepted / Live fixture reviewer: Direct assignment checked; no completeness claim",
+      ),
+    ).toBeVisible();
+    expect((await api<StateTransitionReview[]>(reviewQuery)).length).toBe(1);
+    await page.screenshot({
+      path: testInfo.outputPath("live-state-review.png"),
+      fullPage: true,
+    });
+    await page.goto(
+      `${base}/?snapshot=${encodeURIComponent(before.id)}&context=${encodeURIComponent(before.context.id)}&definition=${encodeURIComponent(entry.id)}&view=explore`,
+    );
+
     const artifact = join(temp, "artifact");
     await writeFile(artifact, "controlled observation fixture; never executed");
     const bundle: ObservationBundle = {
@@ -450,6 +492,7 @@ test("real capture, HTTP, source graph, observations, edit and restart", async (
       `/source/${encodeURIComponent(entry.file_id)}?${pin(before)}`,
     );
     expect(restartedSource.text).toBe(original);
+    expect((await api<StateTransitionReview[]>(reviewQuery)).length).toBe(1);
     expect((await api<Snapshot[]>("/snapshots")).length).toBe(2);
     await page.goto(
       `${base}/?snapshot=${encodeURIComponent(before.id)}&context=${encodeURIComponent(before.context.id)}&definition=${encodeURIComponent(callback.id)}&depth=2&direction=outgoing`,

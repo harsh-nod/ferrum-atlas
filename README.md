@@ -8,7 +8,7 @@ This is a working local implementation of the included [design specification](ru
 
 ![Ferrum Atlas showing source-linked calls from the captured Rust pilot](docs/images/explore-desktop.png)
 
-The [local implementation report](docs/milestones/local-slice.md) records passing CI, test coverage, reviewed fixes, screenshots, and the remaining acceptance gates.
+The [specification inventory](docs/milestones/specification-status.md) distinguishes implemented workflows from open engineering and qualification gates. The [qualification report](docs/milestones/qualification-next.md) retains real and synthetic measurements, including unsuccessful preliminary results.
 
 ## Run Locally
 
@@ -38,6 +38,7 @@ Open the authenticated URL printed by `serve`. To analyze your project, replace 
 - Source/graph navigation, table alternatives, review views and shareable pinned links.
 - Artifact-matched test outcomes and independent-clock trace streams, imported without execution.
 - Optional exact-toolchain MIR records, checked against captured source before display.
+- Bounded whole-local MIR dataflow and opt-in syntax state-transition candidates with separately retained reviewer declarations.
 
 No Cargo commands, build scripts, rustc wrappers or procedural macros from an analyzed workspace run in read-only mode. Missing dependencies, generated inputs, macro expansions and unsupported semantics reduce coverage explicitly. Unknown targets are not guessed, and bounded results do not imply complete absence.
 
@@ -61,3 +62,7 @@ Tests cover extraction, configuration, offsets, authorization, query limits, act
 The workspace separates model, capture, rust-analyzer adapter, storage, queries, analysis, scheduler, imported evidence, HTTP and CLI ownership. TypeScript contracts are generated from Rust. See [local operations](docs/operations/local.md), [compiler and job workflows](docs/operations/compiler-and-jobs.md), [API contracts](docs/schema/api.md), [architecture decisions](docs/adr/0001-local-architecture.md), and [the tracked roadmap](https://github.com/harsh-nod/ferrum-atlas/issues).
 
 Project code is MIT OR Apache-2.0. Third-party components retain their own licenses; see [dependency notes](docs/dependencies.md).
+
+The [local prerelease packaging workflow](docs/operations/install.md) builds a
+versioned binary, browser bundle, schema metadata, checksums and dependency
+notices. Packaging does not establish the specification's qualified release gates.

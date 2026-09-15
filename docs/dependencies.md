@@ -26,7 +26,7 @@ certification. No dependency versions were changed during this check.
 
 | Input | SHA-256 |
 | --- | --- |
-| `Cargo.lock` | `d8bd774028159524db31be2a6dc3b61f64937fc535801dbefb9f44c28e0c1aa2` |
+| `Cargo.lock` | `90399e57bf03db59b99e2978d6a8b77fb3e1e97a611a5c169eef02a7ffe3f734` |
 | `adapters/rustc/Cargo.lock` | `370c0d99c47df66ec4c38cf2ad095457b03b8335c8223253ff45e201aacd5533` |
 | `web/package-lock.json` | `9f33697eaada45a9c4e9b65ba01a3ab1e714d35eafe2ce8831ae3fd12b4a9b66` |
 

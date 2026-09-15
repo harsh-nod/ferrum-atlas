@@ -19,6 +19,7 @@ import { SourcePane } from "./SourcePane";
 import { JobsView } from "./JobsView";
 import { TraceCompareView } from "./TraceCompareView";
 import { CompilerFlowView } from "./CompilerFlowView";
+import { StateMachineView } from "./StateMachineView";
 
 export function EvidenceList({ evidence }: { evidence: Evidence[] }) {
   return (
@@ -377,6 +378,14 @@ export function FlowView({
           )}
           <CoverageNotice coverage={flow.data.coverage} />
         </div>
+      )}
+      {!compilerImport && definition && (
+        <StateMachineView
+          key={`${snapshot.id}:${snapshot.context.id}:${definition.id}`}
+          snapshot={snapshot}
+          definition={definition}
+          onSpan={onSpan}
+        />
       )}
     </section>
   );

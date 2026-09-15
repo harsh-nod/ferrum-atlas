@@ -1,5 +1,6 @@
 //! Authenticated, bounded local HTTP queries over immutable snapshots.
 mod advanced;
+mod state_machine;
 use atlas_model::*;
 use atlas_query::{QueryControl, QueryEngine};
 use axum::{
@@ -121,6 +122,11 @@ pub fn router(engine: QueryEngine, config: &ServerConfig) -> anyhow::Result<Rout
         .route("/graph/neighborhood", post(neighborhood))
         .route("/graph/analysis", post(advanced::graph_analysis))
         .route("/graph/path", post(advanced::graph_path))
+        .route("/analysis/state-machine/{id}", post(state_machine::analyze))
+        .route(
+            "/analysis/state-machine/{id}/reviews",
+            get(state_machine::reviews).post(state_machine::review),
+        )
         .route("/queries/impact", post(advanced::impact))
         .route("/traces/compare", post(advanced::trace_compare))
         .route("/compiler", get(advanced::compiler_imports))
@@ -810,6 +816,7 @@ mod tests {
             "/v1/compiler",
             "/v1/compiler/bodies/id",
             "/v1/compiler/bodies/id/dataflow",
+            "/v1/analysis/state-machine/id/reviews",
         ] {
             let response = app
                 .clone()
@@ -830,6 +837,8 @@ mod tests {
             "/v1/snapshots/id/pin",
             "/v1/snapshots/id/unpin",
             "/v1/snapshots/id/prepare",
+            "/v1/analysis/state-machine/id",
+            "/v1/analysis/state-machine/id/reviews",
         ] {
             let response = app
                 .clone()
