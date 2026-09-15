@@ -198,9 +198,14 @@ for (const width of [1440, 390]) {
     await expect(page.locator(".dataflow-view")).toHaveCount(1);
     await expect(page.locator(".dataflow-table")).toHaveCount(0);
     await expect(panel).toContainText("E - N + 2P");
+    await expect(
+      panel.locator(".compiler-measurement-notes"),
+    ).not.toHaveAttribute("open", "");
+    await panel.getByText("Coverage and assumptions", { exact: true }).click();
     await expect(panel).toContainText(
       "not execution feasibility, termination, or code quality",
     );
+    await panel.getByText("Coverage and assumptions", { exact: true }).click();
     await expect(panel.locator(".compiler-complexity-metrics dd")).toHaveText([
       "1",
       "2",
@@ -278,6 +283,10 @@ test("absent metrics cover both bounded work and graphs without an exit conventi
   const panel = page.getByRole("region", { name: "Compiler CFG complexity" });
   await panel.getByRole("button", { name: "Measure CFG", exact: true }).click();
   await expect(panel).toContainText("CFG metrics unavailable");
+  await expect(panel.locator(".compiler-measurement-notes")).toHaveAttribute(
+    "open",
+    "",
+  );
   await expect(panel).toContainText("Deadline reached");
   await expect(panel.locator(".compiler-complexity-metrics")).toHaveCount(0);
   report.envelope.deadline_reached = false;

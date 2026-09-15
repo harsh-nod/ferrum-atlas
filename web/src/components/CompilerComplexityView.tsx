@@ -103,9 +103,15 @@ export function CompilerComplexityView({
       {data && (
         <>
           <p>
-            <code>{data.formula}</code>
+            <code>{data.formula}</code>{" "}
+            <span className={`badge ${data.envelope.coverage.status}`}>
+              {data.envelope.coverage.status}
+            </span>
           </p>
-          <AnalysisNotes envelope={data.envelope} />
+          <details className="compiler-measurement-notes" open={!metrics}>
+            <summary>Coverage and assumptions</summary>
+            <AnalysisNotes envelope={data.envelope} />
+          </details>
           <details>
             <summary>CFG measurement provenance</summary>
             <dl className="context-list">

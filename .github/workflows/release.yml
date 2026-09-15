@@ -75,6 +75,25 @@ jobs:
           python3 scripts/release.py validate "release-output/ferrum-atlas-${VERSION}-x86_64-unknown-linux-gnu.tar.gz"
           cd release-output
           sha256sum --check "ferrum-atlas-${VERSION}-x86_64-unknown-linux-gnu.tar.gz.sha256"
+      - name: Exercise the verified package CLI and viewer
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir release-installed
+          tar --extract --gzip --file "release-output/ferrum-atlas-${VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+            --directory release-installed --no-same-owner --no-same-permissions
+          INSTALL="$GITHUB_WORKSPACE/release-installed/ferrum-atlas-${VERSION}-x86_64-unknown-linux-gnu"
+          cd web
+          npx playwright install --with-deps chromium
+          ATLAS_TEST_BINARY="$INSTALL/bin/atlas" \
+          ATLAS_TEST_WEB_DIR="$INSTALL/share/ferrum-atlas/web" \
+          npx playwright test tests/live.spec.ts
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: package-browser-evidence
+          path: web/test-results/
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: ferrum-atlas-${{ steps.version.outputs.version }}-x86_64-unknown-linux-gnu

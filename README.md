@@ -50,6 +50,8 @@ cargo fmt --all --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace
 cargo run --locked -p xtask -- check-types
+python3 -m unittest discover -s scripts/tests -p 'test_release.py'
+python3 -m unittest discover -s benchmarks -p 'test_*.py'
 npm --prefix web run build
 cd web
 npx playwright install chromium
@@ -57,6 +59,9 @@ npm test
 ```
 
 Tests cover extraction, configuration, offsets, authorization, query limits, actual publication crashes, worker cancellation, evidence imports, restart workflows and browser interactions. Performance smoke reports are not scale certification.
+The separate pinned-compiler CI job explicitly runs the two adapter-dependent
+Rust tests that the ordinary workspace command leaves ignored, as well as the
+compiler adapter's own tests and real compiler-to-browser workflow.
 
 ## Development
 

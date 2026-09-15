@@ -8,6 +8,7 @@
 /.atlas-*/
 /release-inputs/
 /release-output/
+/release-installed/
 __pycache__/
 *.log
 .DS_Store

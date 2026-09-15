@@ -25,7 +25,12 @@ test("real capture, HTTP, source graph, observations, edit and restart", async (
 }, testInfo) => {
   test.setTimeout(90_000);
   const root = resolve(import.meta.dirname, "../..");
-  const binary = join(root, "target/debug/atlas");
+  const binary = process.env.ATLAS_TEST_BINARY
+    ? resolve(process.env.ATLAS_TEST_BINARY)
+    : join(root, "target/debug/atlas");
+  const webDir = process.env.ATLAS_TEST_WEB_DIR
+    ? resolve(process.env.ATLAS_TEST_WEB_DIR)
+    : join(root, "web/dist");
   const temp = await mkdtemp(join(tmpdir(), "atlas-live-"));
   const workspace = join(temp, "project");
   const store = join(temp, "store");
@@ -68,7 +73,7 @@ test("real capture, HTTP, source graph, observations, edit and restart", async (
         "--listen",
         `127.0.0.1:${port}`,
         "--web-dir",
-        join(root, "web/dist"),
+        webDir,
         "--token-file",
         tokenFile,
       ],
