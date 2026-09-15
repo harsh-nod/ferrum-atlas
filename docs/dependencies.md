@@ -1,27 +1,33 @@
 # Dependency Inventory and Audit
 
-Checked on 2026-09-14. This records the resolved dependency metadata and scans
-performed for the initial implementation, not a security or license-compliance
+Checked on 2026-09-15. This records the resolved dependency metadata and scans
+performed for the local implementation, not a security or license-compliance
 certification. No dependency versions were changed during this check.
 
 ## Inputs and Method
 
 - Rust: `cargo metadata --locked --format-version 1`, using the root `Cargo.lock`.
-  Direct dependencies below are the union of external dependencies of all nine
+  Direct dependencies below are the union of external dependencies of all eleven
   workspace packages, including development dependencies. Metadata contained 264
   external resolved packages; every package declared a license.
+- Separate pinned compiler adapter: `adapters/rustc/Cargo.lock`, 40 external
+  resolved packages, all with declared licenses. Its direct dependencies are
+  `anyhow`, `rustix`, `serde`, `serde_json`, `sha2`, `tempfile`, and `ts-rs`, at
+  the same versions listed below. Compiler/sysroot components are not Cargo
+  lockfile dependencies and are outside the advisory scan.
 - Viewer: `web/package.json` and the version 3 `web/package-lock.json`, parsed as
   JSON. The lockfile contained 89 package records, including development and
   platform-optional dependencies; every record declared a license.
 - Rust license strings below are the packages' declared Cargo metadata. Viewer
   license strings are the locked package metadata. They are not an independent
   review of every distributed file or bundled component.
-- The viewer check ran in the isolated viewer worktree before integration. The
-  lockfile hashes identify the exact inputs regardless of worktree location.
+- Checks were repeated in the integrated main worktree. The lockfile hashes
+  identify the exact inputs regardless of worktree location.
 
 | Input | SHA-256 |
 | --- | --- |
-| `Cargo.lock` | `da56e05e5ed7bec5181fa37849f39f7f2292d231597685c08ef3b790ac20af67` |
+| `Cargo.lock` | `d8bd774028159524db31be2a6dc3b61f64937fc535801dbefb9f44c28e0c1aa2` |
+| `adapters/rustc/Cargo.lock` | `370c0d99c47df66ec4c38cf2ad095457b03b8335c8223253ff45e201aacd5533` |
 | `web/package-lock.json` | `9f33697eaada45a9c4e9b65ba01a3ab1e714d35eafe2ce8831ae3fd12b4a9b66` |
 
 ## Direct Rust Dependencies
@@ -36,7 +42,9 @@ packages, including development tooling such as `xtask`.
 | `anyhow` | `1.0.104` | MIT OR Apache-2.0 |
 | `axum` | `0.8.4` | MIT |
 | `clap` | `4.6.6` | MIT OR Apache-2.0 |
+| `futures-util` | `0.3.34` | MIT OR Apache-2.0 |
 | `hmac` | `0.12.1` | MIT OR Apache-2.0 |
+| `petgraph` | `0.8.3` | MIT OR Apache-2.0 |
 | `ra_ap_base_db` | `0.0.349` | MIT OR Apache-2.0 |
 | `ra_ap_cfg` | `0.0.349` | MIT OR Apache-2.0 |
 | `ra_ap_hir` | `0.0.349` | MIT OR Apache-2.0 |
@@ -96,7 +104,8 @@ third-party notice bundle or a determination of license compatibility.
 
 | Command | Tool and Scope | Observed Result |
 | --- | --- | --- |
-| `cargo audit --json` | Installed `cargo-audit` 0.22.1; 273 root lockfile packages; no target filters or ignored advisories | Exit 0; 0 matched vulnerabilities; no informational warnings |
+| `cargo audit --json` | Installed `cargo-audit` 0.22.1; 275 root lockfile packages; no target filters or ignored advisories | Exit 0; 0 matched vulnerabilities; no informational warnings |
+| `cargo audit --json --file adapters/rustc/Cargo.lock` | Same audit tool; 41 compiler adapter lockfile packages | Exit 0; 0 matched vulnerabilities; no informational warnings |
 | `npm audit --omit=dev --json` | npm 11.16.0 on Node 22.22.1; viewer production dependency graph | Exit 0; 0 vulnerabilities reported at every severity |
 | `npm audit --json` | Same npm and Node versions; viewer graph including development dependencies | Exit 0; 0 vulnerabilities reported at every severity |
 
@@ -139,9 +148,10 @@ From the repository root:
 ```sh
 cargo metadata --locked --format-version 1
 cargo audit --json
+cargo audit --json --file adapters/rustc/Cargo.lock
 npm --prefix web audit --omit=dev --json
 npm --prefix web audit --json
-sha256sum Cargo.lock web/package-lock.json
+sha256sum Cargo.lock adapters/rustc/Cargo.lock web/package-lock.json
 ```
 
 `cargo-audit` must already be installed or separately provisioned. Metadata may

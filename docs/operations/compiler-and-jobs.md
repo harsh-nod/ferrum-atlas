@@ -27,6 +27,12 @@ The import adds a retention pin. The viewer's Flow selector distinguishes source
 flow points from named-phase compiler basic blocks. Missing mappings are unavailable,
 not guessed. Compiler identities establish consistency, not producer authenticity.
 
+Analyze locals requests bounded whole-local reaching definitions for the selected
+body. Uses retain possible definitions, path tracking gaps and unresolved memory
+effects. Calls only define their destinations on normal return. Coroutines retain
+external-state uncertainty. This is not a proof of value equality, pointer aliasing,
+absence of undefined behavior, or whole-program correctness.
+
 Only a single library crate, explicit cfg/features and the installed sysroot are
 supported. Full Cargo build units, dependency acquisition, user build scripts,
 user proc-macro artifacts and arbitrary compiler versions are not orchestrated.

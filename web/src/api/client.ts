@@ -72,17 +72,29 @@ export async function request<T>(
     const result = await fetchJson<T>(path, signal, body, token);
     if (token !== readToken())
       throw new DOMException("Session changed", "AbortError");
+    const response = record(result);
+    if (
+      record(response.work).deadline_reached === true ||
+      record(record(response.analysis).envelope).deadline_reached === true ||
+      record(record(response.comparison).envelope).deadline_reached === true
+    )
+      invalidateReadiness(scopes);
     return result;
   } catch (error) {
     // Readiness is a performance hint, never a lasting integrity guarantee.
     if (!signal.aborted && preparationSession === token)
-      for (const scope of scopes) {
-        const key = scopeKey(scope);
-        if (preparations.get(key)?.ready) preparations.delete(key);
-      }
+      invalidateReadiness(scopes);
     throw error;
   } finally {
     waiting.abort();
+  }
+}
+
+function invalidateReadiness(scopes: Scope[]) {
+  // A successful partial response may follow eviction from the server cache.
+  for (const scope of scopes) {
+    const key = scopeKey(scope);
+    if (preparations.get(key)?.ready) preparations.delete(key);
   }
 }
 
@@ -139,7 +151,7 @@ async function requestScopes(
     });
   }
   if (
-    !/^\/(search|definitions|source|graph|flow|evidence|compiler|analysis|observations|queries|traces)(\/|$)/.test(
+    !/^\/(search|definitions|source|graph|flow|bodies|evidence|compiler|analysis|observations|queries|traces)(\/|$)/.test(
       url.pathname,
     )
   )

@@ -243,6 +243,27 @@ test("real capture, HTTP, source graph, observations, edit and restart", async (
       "ready",
     );
     await expect(page.locator(".cm-content")).toContainText("pub fn entry");
+    await page
+      .getByRole("button", { name: "Pin selection", exact: true })
+      .click();
+    await expect(page.locator(".bookmark-entry .retained")).toHaveText(
+      "Snapshot retained",
+    );
+    expect(
+      run(["pins"]).some(
+        (pin: { name: string; snapshot_id: string }) =>
+          pin.name.startsWith("bookmark-pin:") && pin.snapshot_id === before.id,
+      ),
+    ).toBe(true);
+    await page
+      .getByRole("button", { name: "Unpin selection", exact: true })
+      .click();
+    await expect(page.locator(".bookmark-entry")).toHaveCount(0);
+    expect(
+      run(["pins"]).some((pin: { name: string }) =>
+        pin.name.startsWith("bookmark-pin:"),
+      ),
+    ).toBe(false);
     expect(page.url()).not.toContain(token);
     const pixels = await page
       .getByTestId("graph-canvas")
@@ -437,6 +458,35 @@ test("real capture, HTTP, source graph, observations, edit and restart", async (
       "data-layout-state",
       "ready",
     );
+    await page.evaluate(() =>
+      localStorage.setItem(
+        "ferrum-atlas.bookmarks",
+        JSON.stringify([
+          {
+            id: "missing-history",
+            label: "Absent snapshot",
+            note: "",
+            location: {
+              snapshot: "analysis:missing",
+              context: "context:missing",
+              definition: "definition:missing",
+              edge: "",
+              view: "explore",
+              depth: 2,
+              direction: "both",
+            },
+          },
+        ]),
+      ),
+    );
+    await page.reload();
+    await expect(page.locator(".bookmark-entry")).toContainText(
+      "Snapshot not confirmed retained",
+    );
+    await page
+      .getByRole("button", { name: "Remove trail pin Absent snapshot" })
+      .click();
+    await expect(page.locator(".bookmark-entry")).toHaveCount(0);
     await page.setViewportSize({ width: 390, height: 844 });
     await page.screenshot({
       path: testInfo.outputPath("live-mobile.png"),

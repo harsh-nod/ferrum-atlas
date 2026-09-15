@@ -23,6 +23,7 @@ All data routes require a session bearer token and an allowed request Host/Origi
 | GET /v1/bodies/{id}/flow?snapshot_id&context_id&phase=source | FunctionFlow alias |
 | GET /v1/compiler?snapshot_id&context_id | CompilerImportSummary[] |
 | GET /v1/compiler/bodies/{id}?snapshot_id&context_id&import_id&offset&limit | CompilerFlowPage |
+| GET /v1/compiler/bodies/{id}/dataflow?snapshot_id&context_id&import_id | AnalysisResponse&lt;ReachingDefinitions&gt; |
 | GET /v1/evidence/{id}?snapshot_id&context_id | Evidence |
 | GET /v1/observations?snapshot_id&context_id | ObservationSummary[] |
 | GET /v1/observations/{id}?snapshot_id&context_id&offset&limit | ObservationWindow |
@@ -50,6 +51,15 @@ Compiler flow pages expose at most 200 blocks from a verified imported body. Its
 producer, input manifest, phase and panic strategy remain attached to each page.
 This named-phase CFG is separate from source flow points and runtime traces.
 Type display strings are not machine-readable type semantics.
+
+Compiler dataflow is opt-in, intraprocedural, whole-local reaching definitions
+over one complete imported body of at most 200 blocks. The solver has a two-second
+analysis deadline and independent local, fact, iteration and response limits.
+Call-return assignments propagate only along normal-return edges. Unknown calls,
+pointers, aliases and suspension boundaries remain explicitly uncertain. No
+def-use claims are emitted before convergence; truncated output after convergence
+remains marked partial. `may_be_uninitialized` is an abstract tracking gap, not a
+Rust undefined-behavior finding. There is no interprocedural value/alias solver.
 
 Selected graph algorithms operate only on their bounded input graph. SCC and
 path results carry algorithm versions, assumptions and unknown frontiers. A

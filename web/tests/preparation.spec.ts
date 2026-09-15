@@ -55,6 +55,7 @@ test("concurrent fact queries share one scope preparation and metadata/jobs/pins
     for (const path of [
       "/search",
       "/flow/d",
+      "/bodies/d",
       "/evidence/e",
       "/compiler",
       "/observations",
@@ -80,6 +81,43 @@ test("concurrent fact queries share one scope preparation and metadata/jobs/pins
   expect(events.filter((item) => item === "prepare")).toHaveLength(1);
   expect(events).toContain("/v1/source/f");
   expect(events).toContain("/v1/graph/path");
+});
+
+test("successful deadline-partial responses invalidate readiness without retrying or concealing the result", async ({
+  page,
+}) => {
+  await harness(page);
+  let prepares = 0;
+  const responses = [
+    { work: { deadline_reached: true }, items: [] },
+    { analysis: { envelope: { deadline_reached: true } } },
+    { comparison: { envelope: { deadline_reached: true } } },
+    { work: { deadline_reached: false }, items: ["ready"] },
+    { work: { deadline_reached: false }, items: ["ready"] },
+  ];
+  let facts = 0;
+  await page.route("**/v1/**", async (route) => {
+    if (new URL(route.request().url()).pathname.endsWith("/prepare")) {
+      prepares++;
+      return route.fulfill({
+        json: { snapshot_id: "s", context_id: "c", ready: true },
+      });
+    }
+    await route.fulfill({ json: responses[facts++] });
+  });
+  for (let i = 0; i < responses.length; i++) {
+    const result = await page.evaluate(async () => {
+      const module = "/src/api/client.ts";
+      const { request } = await import(module);
+      return request(
+        "/search?snapshot_id=s&context_id=c",
+        new AbortController().signal,
+      );
+    });
+    expect(result).toEqual(responses[i]);
+    expect(facts).toBe(i + 1);
+    expect(prepares).toBe(Math.min(i + 1, 4));
+  }
 });
 
 test("diff resolves both context pins and trace comparisons prepare both independent scopes", async ({

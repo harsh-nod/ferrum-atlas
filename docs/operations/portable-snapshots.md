@@ -15,6 +15,12 @@ configuration, scheduler state, absolute workspace roots, or executable
 artifacts. Repository source and manifest contents are intentionally included
 without redaction; review them before sharing an export.
 
+Portable version 1 does not include separately imported compiler bundles or
+their derived MIR CFG/dataflow results. Preserve those bundles separately and
+reimport them against the restored snapshot using `atlas import-compiler`.
+The importer revalidates their exact source and context identities; restoring
+a portable snapshot alone must not be interpreted as restoring compiler evidence.
+
 ## Import Contract
 
 `Store::import_directory(source, head, expected, validate_observations)` reads only
