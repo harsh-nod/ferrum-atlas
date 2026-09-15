@@ -23,6 +23,7 @@ export type Bookmark = {
   label: string;
   location: LocationState;
   note: string;
+  retentionName?: string;
 };
 
 export function parseLocation(search: string): LocationState {
@@ -139,7 +140,15 @@ export function loadBookmarks(): Bookmark[] {
           ["incoming", "outgoing", "both"].includes(item.location.direction) &&
           views.includes(item.location.view),
       )
-      .slice(0, 40);
+      .slice(0, 40)
+      .map((item) => ({
+        ...item,
+        retentionName:
+          typeof item.retentionName === "string" &&
+          /^[A-Za-z0-9_-]{1,128}$/.test(item.retentionName)
+            ? item.retentionName
+            : undefined,
+      }));
   } catch {
     return [];
   }

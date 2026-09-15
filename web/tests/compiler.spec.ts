@@ -150,9 +150,17 @@ for (const width of [1440, 390]) {
     if (width === 390)
       await page.getByRole("button", { name: "Show graph or flow" }).click();
     await page.getByLabel("Flow phase").selectOption(imported.id);
+    const provenance = page.locator(".compiler-flow-view > details").first();
+    await expect(provenance).not.toHaveAttribute("open", "");
+    await expect(
+      page.locator(".compiler-flow-view > .analysis-section-heading .badge"),
+    ).toHaveText("partial");
     await expect(
       page.getByRole("heading", { name: "Compiler Basic Blocks" }),
     ).toBeVisible();
+    await expect(
+      page.locator(".compiler-block-table tr").nth(1),
+    ).toBeInViewport();
     await expect(page.locator(".compiler-block-table")).toContainText(
       "340282366920938463463374607431768211455",
     );

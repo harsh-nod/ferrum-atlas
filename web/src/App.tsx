@@ -19,8 +19,10 @@ import {
   LockKeyhole,
   Network,
   PanelRight,
+  RefreshCw,
   Search,
   ShieldCheck,
+  Trash2,
   Workflow,
   X,
 } from "lucide-react";
@@ -37,14 +39,8 @@ import type {
   Snapshot,
   Span,
 } from "./api/types";
-import {
-  loadBookmarks,
-  locationUrl,
-  useLocationState,
-  useResource,
-  views,
-} from "./state";
-import type { Bookmark } from "./state";
+import { locationUrl, useLocationState, useResource, views } from "./state";
+import { retentionLabel, useReadingTrail } from "./readingTrail";
 import {
   CoverageNotice,
   ErrorNotice,
@@ -85,7 +81,8 @@ export function App() {
   const [mobilePanel, setMobilePanel] = useState<"source" | "graph">("source");
   const [scopeWidth, setScopeWidth] = useState(220);
   const [sourceHeight, setSourceHeight] = useState(320);
-  const [bookmarks, setBookmarks] = useState<Bookmark[]>(loadBookmarks);
+  const trail = useReadingTrail(token ? `connected:${session}` : "");
+  const { bookmarks } = trail;
   const [note, setNote] = useState("");
   const [notification, setNotification] = useState("");
   const [flowSpan, setFlowSpan] = useState<Span>();
@@ -303,27 +300,15 @@ export function App() {
     setSearch("");
     setQuery("");
   }
-  function saveBookmarks(next: Bookmark[]) {
-    setBookmarks(next);
-    try {
-      localStorage.setItem("ferrum-atlas.bookmarks", JSON.stringify(next));
-    } catch {
-      setNotification("Bookmark storage unavailable");
-    }
-  }
   function toggleBookmark() {
-    if (activeBookmark)
-      saveBookmarks(bookmarks.filter((item) => item.id !== activeBookmark.id));
+    if (activeBookmark) void trail.remove(activeBookmark);
     else if (activeDefinition)
-      saveBookmarks([
-        ...bookmarks.slice(-39),
-        {
-          id: crypto.randomUUID(),
-          label: activeDefinition.qualified_name,
-          location,
-          note,
-        },
-      ]);
+      void trail.add({
+        id: crypto.randomUUID(),
+        label: activeDefinition.qualified_name,
+        location,
+        note,
+      });
   }
   async function copyLink() {
     try {
@@ -444,7 +429,7 @@ export function App() {
         </div>
         <span className="index-status">
           <span className="status-dot" />
-          {snapshot ? "Snapshot pinned" : "Connecting"}
+          {snapshot ? "Snapshot selected" : "Connecting"}
         </span>
       </header>
       <nav className="view-tabs" aria-label="Workspace views">
@@ -462,7 +447,9 @@ export function App() {
               key={view}
               className={`view-tab ${location.view === view ? "active" : ""}`}
               aria-current={location.view === view ? "page" : undefined}
-              onClick={() => navigate({ view })}
+              onClick={() =>
+                navigate({ view, ...(view === "flow" ? { edge: "" } : {}) })
+              }
             >
               <Icon size={16} />
               <span>{view[0].toUpperCase() + view.slice(1)}</span>
@@ -602,6 +589,18 @@ export function App() {
             <div className="trail-heading">
               <span>Reading trail</span>
               <IconButton
+                label="Retry snapshot retention"
+                disabled={
+                  trail.pending ||
+                  !bookmarks.some(
+                    (item) => trail.statuses[item.id] !== "retained",
+                  )
+                }
+                onClick={() => void trail.retry()}
+              >
+                <RefreshCw size={14} />
+              </IconButton>
+              <IconButton
                 label="Export reading trail"
                 disabled={!bookmarks.length}
                 onClick={exportTrail}
@@ -611,18 +610,37 @@ export function App() {
             </div>
             <div className="bookmarks">
               {bookmarks.map((item) => (
-                <button
-                  key={item.id}
-                  className="bookmark-row"
-                  title={`${item.label}\n${item.note}`}
-                  onClick={() => {
-                    navigate(item.location);
-                    setDrawer("");
-                  }}
-                >
-                  <BookmarkIcon size={13} />
-                  <span>{item.label}</span>
-                </button>
+                <div className="bookmark-entry" key={item.id}>
+                  <button
+                    className="bookmark-row"
+                    title={`${item.label}\n${retentionLabel(trail.statuses[item.id])}\n${item.note}`}
+                    onClick={() => {
+                      navigate(item.location);
+                      setDrawer("");
+                    }}
+                  >
+                    <BookmarkIcon size={13} />
+                    <span>
+                      {item.label}
+                      <small
+                        className={
+                          trail.statuses[item.id] === "retained"
+                            ? "retained"
+                            : "retention-unknown"
+                        }
+                      >
+                        {retentionLabel(trail.statuses[item.id])}
+                      </small>
+                    </span>
+                  </button>
+                  <IconButton
+                    label={`Remove trail pin ${item.label}`}
+                    disabled={trail.pending}
+                    onClick={() => void trail.remove(item)}
+                  >
+                    <Trash2 size={13} />
+                  </IconButton>
+                </div>
               ))}
               {!bookmarks.length && (
                 <p className="muted small">No pinned selections.</p>
@@ -667,7 +685,9 @@ export function App() {
               <IconButton
                 label={activeBookmark ? "Unpin selection" : "Pin selection"}
                 aria-pressed={Boolean(activeBookmark)}
-                disabled={!activeDefinition}
+                disabled={
+                  (!activeDefinition && !activeBookmark) || trail.pending
+                }
                 onClick={toggleBookmark}
               >
                 <BookmarkIcon
@@ -679,6 +699,7 @@ export function App() {
                 <Link2 size={16} />
               </IconButton>
             </div>
+            <ErrorNotice error={trail.error} />
             <ErrorNotice error={definition.error} />
             {missingEdge && (
               <div className="notice error" role="alert">
@@ -931,20 +952,17 @@ export function App() {
                   id="trail-note"
                   placeholder="Invariant or open question"
                   value={activeBookmark?.note ?? note}
+                  disabled={Boolean(activeBookmark) && trail.pending}
                   onChange={(event) => {
                     if (activeBookmark)
-                      saveBookmarks(
-                        bookmarks.map((item) =>
-                          item.id === activeBookmark.id
-                            ? { ...item, note: event.target.value }
-                            : item,
-                        ),
-                      );
+                      trail.editNote(activeBookmark.id, event.target.value);
                     else setNote(event.target.value);
                   }}
                 />
                 <span className="muted small">
-                  {activeBookmark ? "Saved" : "Unpinned note"}
+                  {activeBookmark
+                    ? retentionLabel(trail.statuses[activeBookmark.id])
+                    : "Unpinned note"}
                 </span>
               </section>
             </div>

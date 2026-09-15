@@ -106,12 +106,17 @@ export function CompilerFlowView({
       <ErrorNotice error={source.error} />
       {page.data && (
         <>
-          <h3>{page.data.phase}</h3>
-          <p>
-            {page.data.compiler.release} / {page.data.compiler.host}
-          </p>
+          <div className="analysis-section-heading">
+            <h3>{page.data.phase}</h3>
+            <span className={`badge ${page.data.coverage.status}`}>
+              {page.data.coverage.status}
+            </span>
+          </div>
           <details>
-            <summary>Compiler provenance</summary>
+            <summary>Compiler provenance and limitations</summary>
+            <p>
+              {page.data.compiler.release} / {page.data.compiler.host}
+            </p>
             <dl className="context-list">
               <dt>Compiler commit</dt>
               <dd className="mono">{page.data.compiler.commit_hash}</dd>
@@ -129,8 +134,8 @@ export function CompilerFlowView({
               <dt>Body</dt>
               <dd className="mono">{page.data.body.def_path}</dd>
             </dl>
+            <CoverageNotice coverage={page.data.coverage} />
           </details>
-          <CoverageNotice coverage={page.data.coverage} />
           <div className="analysis-section-heading">
             <h3>Compiler Basic Blocks</h3>
             <span>

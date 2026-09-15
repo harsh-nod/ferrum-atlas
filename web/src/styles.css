@@ -497,6 +497,39 @@ code,
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.bookmark-row small {
+  display: block;
+  white-space: normal;
+  font-size: 10px;
+  margin-top: 3px;
+}
+.bookmark-entry {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 26px;
+  align-items: center;
+  gap: 4px;
+}
+.bookmark-entry > .icon-button {
+  width: 26px;
+  height: 28px;
+}
+.bookmark-row > svg {
+  flex-shrink: 0;
+}
+.retained {
+  color: #16765e;
+}
+.retention-unknown {
+  color: #8b561c;
+}
+.trail-heading > span {
+  flex: 1;
+}
+.trail-heading .icon-button {
+  flex-shrink: 0;
+  width: 26px;
+  height: 28px;
+}
 .scope-bottom {
   border-top: 1px solid var(--border);
   padding: 13px;

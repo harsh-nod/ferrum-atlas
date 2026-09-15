@@ -156,6 +156,17 @@ export async function mockApi(
     }
     if (url.pathname === "/v1/snapshots")
       return route.fulfill({ json: snapshots });
+    if (/^\/v1\/snapshots\/[^/]+\/(unpin|pin)$/.test(url.pathname)) {
+      const body = route.request().postDataJSON();
+      return route.fulfill({
+        json: {
+          snapshot_id: decodeURIComponent(url.pathname.split("/")[3]),
+          context_id: body.context_id,
+          name: body.name,
+          retained: url.pathname.endsWith("/pin"),
+        },
+      });
+    }
     if (url.pathname.startsWith("/v1/snapshots/")) {
       const id = decodeURIComponent(url.pathname.split("/").at(-1)!);
       const selected = snapshots.find((item) => item.id === id);
