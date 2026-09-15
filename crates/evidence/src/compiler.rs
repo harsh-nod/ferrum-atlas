@@ -11,6 +11,7 @@ use std::{
 
 const MAX_BYTES: u64 = 32 * 1024 * 1024;
 const COMMIT: &str = "55e86c996809902e8bbad512cfb4d2c18be446d9";
+const TARGET: &str = "x86_64-unknown-linux-gnu";
 fn sha(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
@@ -39,12 +40,14 @@ pub fn validate(
     );
     ensure!(
         bundle.compiler.adapter == "atlas-rustc"
+            && bundle.compiler.adapter_version == "0.1.0"
             && bundle.compiler.commit_hash == COMMIT
+            && bundle.compiler.host == TARGET
             && bundle.phase == "runtime_optimized",
         "unsupported compiler producer or MIR phase"
     );
     ensure!(
-        bundle.inputs.target == snapshot.context.target,
+        bundle.inputs.target == TARGET && bundle.inputs.target == snapshot.context.target,
         "compiler target does not match the selected context; select an explicit target"
     );
     ensure!(
@@ -57,7 +60,8 @@ pub fn validate(
     );
     ensure!(
         bundle.inputs.mir_opt_level == 0
-            && matches!(bundle.inputs.panic_strategy.as_str(), "abort" | "unwind"),
+            && matches!(bundle.inputs.panic_strategy.as_str(), "abort" | "unwind")
+            && bundle.inputs.compiled_artifact.is_none(),
         "unsupported compiler phase settings"
     );
     ensure!(
@@ -70,17 +74,6 @@ pub fn validate(
                 && krate.edition == bundle.inputs.edition),
         "compiler crate root/name/edition does not match the selected context"
     );
-    let mut cfg = BTreeSet::new();
-    let mut args = bundle.inputs.rustc_args.iter();
-    while let Some(arg) = args.next() {
-        if arg == "--cfg" {
-            cfg.insert(args.next().context("missing compiler cfg value")?.clone());
-        }
-        ensure!(
-            !arg.starts_with("--cfg="),
-            "compiler cfg must use the supported paired argument contract"
-        );
-    }
     let mut expected: BTreeSet<String> = snapshot
         .context
         .cfg
@@ -98,8 +91,12 @@ pub fn validate(
             .map(|feature| format!("feature={}", serde_json::to_string(feature).unwrap())),
     );
     ensure!(
-        cfg == expected,
-        "compiler cfg/features do not match the selected context"
+        expected.len() <= 256 && expected.iter().all(|value| value.len() <= 4096),
+        "compiler cfg argument budget exceeded"
+    );
+    ensure!(
+        bundle.inputs.rustc_args == canonical_arguments(bundle, &expected),
+        "compiler arguments do not match the selected context and supported canonical invocation"
     );
     let mut inputs = bundle.inputs.clone();
     inputs.manifest_hash.clear();
@@ -210,6 +207,34 @@ pub fn validate(
     })
 }
 
+fn canonical_arguments(bundle: &CompilerBundle, cfg: &BTreeSet<String>) -> Vec<String> {
+    let mut arguments = vec![
+        "atlas-rustc".into(),
+        format!("./{}", bundle.inputs.crate_root),
+        "--crate-name".into(),
+        bundle.inputs.crate_name.clone(),
+        "--crate-type=lib".into(),
+        format!("--edition={}", bundle.inputs.edition),
+        format!("--target={}", bundle.inputs.target),
+        format!("-Cpanic={}", bundle.inputs.panic_strategy),
+        "-Copt-level=0".into(),
+        "-Coverflow-checks=yes".into(),
+        "-Zmir-opt-level=0".into(),
+        "--emit=metadata".into(),
+        "--sysroot".into(),
+        format!(
+            "compiler:{}:{}",
+            bundle.compiler.commit_hash, bundle.compiler.host
+        ),
+        "--error-format=json".into(),
+    ];
+    for value in cfg {
+        arguments.push("--cfg".into());
+        arguments.push(value.clone());
+    }
+    arguments
+}
+
 fn span(span: &CompilerSourceMapping, sources: &BTreeMap<&str, &SourceFile>) -> Result<()> {
     if let CompilerSourceMapping::Exact {
         path,
@@ -240,8 +265,9 @@ fn effects(effects: &CompilerLocalEffects, locals: usize) -> Result<()> {
         &effects.storage_dead,
     ] {
         ensure!(
-            list.iter().all(|index| (*index as usize) < locals),
-            "compiler local reference out of range"
+            list.iter().all(|index| (*index as usize) < locals)
+                && list.windows(2).all(|pair| pair[0] < pair[1]),
+            "compiler local references must be in range, unique, and sorted"
         );
     }
     Ok(())
@@ -256,6 +282,13 @@ fn validate_body(
             && body.locals.len() <= 10_000
             && body.argument_count < body.locals.len() as u32,
         "invalid compiler locals"
+    );
+    ensure!(
+        matches!(
+            body.kind.as_str(),
+            "function" | "associated_function" | "closure_or_coroutine" | "synthetic_coroutine"
+        ),
+        "unsupported compiler body kind"
     );
     ensure!(
         !body.blocks.is_empty()
@@ -277,6 +310,14 @@ fn validate_body(
             local.index == index as u32 && (local.source_scope as usize) < body.source_scopes.len(),
             "invalid compiler local/scope identity"
         );
+        let role = if index == 0 {
+            "return"
+        } else if index <= body.argument_count as usize {
+            "argument"
+        } else {
+            "temporary"
+        };
+        ensure!(local.role == role, "invalid compiler local role");
         span(&local.span, sources)?;
     }
     for (index, block) in body.blocks.iter().enumerate() {
@@ -292,6 +333,25 @@ fn validate_body(
                     && (statement.source_scope as usize) < body.source_scopes.len(),
                 "invalid statement/scope identity"
             );
+            ensure!(
+                matches!(
+                    statement.kind.as_str(),
+                    "assign"
+                        | "fake_read"
+                        | "set_discriminant"
+                        | "storage_live"
+                        | "storage_dead"
+                        | "retag"
+                        | "place_mention"
+                        | "ascribe_user_type"
+                        | "coverage"
+                        | "intrinsic"
+                        | "const_eval_counter"
+                        | "nop"
+                        | "backward_incompatible_drop_hint"
+                ),
+                "unsupported compiler statement kind"
+            );
             span(&statement.span, sources)?;
             effects(&statement.locals, body.locals.len())?;
         }
@@ -305,7 +365,11 @@ fn validate_body(
         ensure!(
             term.normal_return_defs
                 .iter()
-                .all(|index| (*index as usize) < body.locals.len()),
+                .all(|index| (*index as usize) < body.locals.len())
+                && term
+                    .normal_return_defs
+                    .windows(2)
+                    .all(|pair| pair[0] < pair[1]),
             "invalid call destination"
         );
         for edge in &term.successors {
@@ -326,7 +390,126 @@ fn validate_body(
             ensure!(body.blocks.get(*target as usize).is_some_and(|block| block.is_cleanup)
                 && term.successors.iter().any(|edge| edge.target == *target && edge.kind == CompilerEdgeKind::Unwind), "invalid cleanup edge");
         }
+        validate_terminator(term)?;
     }
+    Ok(())
+}
+
+fn validate_terminator(term: &CompilerTerminator) -> Result<()> {
+    use CompilerEdgeKind as Edge;
+    let count = |kind| {
+        term.successors
+            .iter()
+            .filter(|edge| edge.kind == kind)
+            .count()
+    };
+    let normal = count(Edge::Normal);
+    let unwind = count(Edge::Unwind);
+    let coroutine_drop = count(Edge::CoroutineDrop);
+    let mut switches = BTreeSet::new();
+    for edge in &term.successors {
+        match (&edge.kind, &edge.switch_value) {
+            (Edge::SwitchValue, Some(text)) => {
+                let value = text.parse::<u128>().context("invalid switch value")?;
+                ensure!(
+                    value.to_string() == *text && switches.insert(value),
+                    "switch values must be canonical and unique"
+                );
+            }
+            (Edge::SwitchValue, None) => anyhow::bail!("switch-value edge lacks a value"),
+            (_, Some(_)) => anyhow::bail!("non-switch edge contains a switch value"),
+            (_, None) => {}
+        }
+    }
+    ensure!(
+        term.assert_expected.is_some() == (term.kind == "assert"),
+        "assert metadata does not match terminator kind"
+    );
+    ensure!(
+        term.call_target.is_some() == matches!(term.kind.as_str(), "call" | "tail_call"),
+        "call metadata does not match terminator kind"
+    );
+    ensure!(
+        term.normal_return_defs.is_empty() || (term.kind == "call" && normal == 1),
+        "normal-return definitions require a returning call"
+    );
+    match &term.unwind {
+        Some(CompilerUnwind::Cleanup { target }) => ensure!(
+            unwind == 1
+                && term
+                    .successors
+                    .iter()
+                    .any(|edge| edge.kind == Edge::Unwind && edge.target == *target),
+            "unwind metadata and successor disagree"
+        ),
+        Some(CompilerUnwind::Terminate { reason }) => {
+            ensure!(
+                matches!(reason.as_str(), "abi" | "panic_during_cleanup"),
+                "unsupported unwind termination reason"
+            );
+            ensure!(unwind == 0, "non-cleanup unwind has a successor");
+        }
+        _ => ensure!(unwind == 0, "unwind successor requires cleanup metadata"),
+    }
+    let total = term.successors.len();
+    let is_valid = match term.kind.as_str() {
+        "goto" => normal == 1 && total == 1 && term.unwind.is_none(),
+        "switch_int" => {
+            count(Edge::Otherwise) == 1
+                && total == switches.len() + 1
+                && term
+                    .successors
+                    .last()
+                    .is_some_and(|edge| edge.kind == Edge::Otherwise)
+                && term.unwind.is_none()
+        }
+        "return" | "unwind_resume" | "unreachable" | "coroutine_drop" | "tail_call" => {
+            total == 0 && term.unwind.is_none()
+        }
+        "unwind_terminate" => {
+            total == 0 && matches!(term.unwind, Some(CompilerUnwind::Terminate { .. }))
+        }
+        "drop" => {
+            normal == 1
+                && coroutine_drop <= 1
+                && total == normal + coroutine_drop + unwind
+                && term.unwind.is_some()
+        }
+        "call" => normal <= 1 && total == normal + unwind && term.unwind.is_some(),
+        "assert" | "false_unwind" => {
+            normal == 1 && total == normal + unwind && term.unwind.is_some()
+        }
+        "yield" => {
+            count(Edge::Resume) == 1
+                && coroutine_drop <= 1
+                && total == 1 + coroutine_drop
+                && term.unwind.is_none()
+        }
+        "false_edge" => {
+            normal == 1 && count(Edge::Imaginary) == 1 && total == 2 && term.unwind.is_none()
+        }
+        "inline_asm" => total == normal + unwind && term.unwind.is_some(),
+        _ => false,
+    };
+    ensure!(is_valid, "terminator kind and successor shape disagree");
+    let required_effect = match term.kind.as_str() {
+        "call" | "tail_call" => Some(CompilerUnknownEffect::Call),
+        "drop" => Some(CompilerUnknownEffect::Drop),
+        "inline_asm" => Some(CompilerUnknownEffect::InlineAssembly),
+        _ => None,
+    };
+    ensure!(
+        required_effect.is_none_or(|effect| term.locals.unknown_effects.contains(&effect)),
+        "required conservative terminator effect is absent"
+    );
+    ensure!(
+        !matches!(term.call_target, Some(CompilerCallTarget::Indirect { .. }))
+            || term
+                .locals
+                .unknown_effects
+                .contains(&CompilerUnknownEffect::IndirectCall),
+        "indirect call is missing its conservative effect"
+    );
     Ok(())
 }
 

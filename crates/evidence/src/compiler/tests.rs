@@ -89,7 +89,23 @@ fn fixture() -> (CompilerBundle, Snapshot, Vec<SourceFile>, Vec<Definition>) {
             target: context.target,
             panic_strategy: "unwind".into(),
             mir_opt_level: 0,
-            rustc_args: vec![],
+            rustc_args: vec![
+                "atlas-rustc".into(),
+                "./lib.rs".into(),
+                "--crate-name".into(),
+                "fixture".into(),
+                "--crate-type=lib".into(),
+                "--edition=2021".into(),
+                "--target=x86_64-unknown-linux-gnu".into(),
+                "-Cpanic=unwind".into(),
+                "-Copt-level=0".into(),
+                "-Coverflow-checks=yes".into(),
+                "-Zmir-opt-level=0".into(),
+                "--emit=metadata".into(),
+                "--sysroot".into(),
+                format!("compiler:{COMMIT}:x86_64-unknown-linux-gnu"),
+                "--error-format=json".into(),
+            ],
             environment_policy: "empty".into(),
             trust: "trusted_local".into(),
             compiled_artifact: None,
@@ -306,4 +322,367 @@ fn compiler_object_corruption_and_invalid_cleanup_are_visible() {
     assert!(list(temp.path(), &snapshot.id, &snapshot.context.id).is_err());
     bundle.bodies[0].blocks[0].terminator.unwind = Some(CompilerUnwind::Cleanup { target: 0 });
     assert!(validate(&bundle, &snapshot, &files, &definitions).is_err());
+}
+
+#[test]
+fn canonical_invocation_rejects_resealed_flag_and_artifact_contradictions() {
+    let (bundle, snapshot, files, definitions) = fixture();
+    for (index, replacement) in [
+        (0, "rustc"),
+        (1, "./other.rs"),
+        (3, "other_crate"),
+        (4, "--crate-type=bin"),
+        (5, "--edition=2015"),
+        (6, "--target=other"),
+        (7, "-Cpanic=abort"),
+        (8, "-Copt-level=3"),
+        (9, "-Coverflow-checks=no"),
+        (10, "-Zmir-opt-level=2"),
+        (11, "--emit=link"),
+        (13, "/private/sysroot"),
+        (14, "--test"),
+    ] {
+        let mut changed = bundle.clone();
+        changed.inputs.rustc_args[index] = replacement.into();
+        seal(&mut changed);
+        assert!(
+            validate(&changed, &snapshot, &files, &definitions).is_err(),
+            "accepted contradictory argument {replacement}"
+        );
+    }
+    for extra in [
+        "--test",
+        "--extern=untrusted",
+        "--cfg=test",
+        "--target=other",
+    ] {
+        let mut changed = bundle.clone();
+        changed.inputs.rustc_args.push(extra.into());
+        seal(&mut changed);
+        assert!(validate(&changed, &snapshot, &files, &definitions).is_err());
+    }
+    let mut changed = bundle.clone();
+    changed.inputs.rustc_args.clear();
+    seal(&mut changed);
+    assert!(validate(&changed, &snapshot, &files, &definitions).is_err());
+    changed = bundle.clone();
+    changed.inputs.compiled_artifact = Some(CompilerArtifact {
+        kind: "executable".into(),
+        sha256: "a".repeat(64),
+    });
+    seal(&mut changed);
+    assert!(validate(&changed, &snapshot, &files, &definitions).is_err());
+    changed = bundle.clone();
+    changed.compiler.adapter_version = "unknown".into();
+    seal(&mut changed);
+    assert!(validate(&changed, &snapshot, &files, &definitions).is_err());
+}
+
+#[test]
+fn cfg_arguments_are_exact_sorted_deduplicated_and_context_pinned() {
+    let (mut bundle, mut snapshot, files, definitions) = fixture();
+    snapshot.context.features = vec!["fast".into()];
+    snapshot.context.cfg.insert("firmware".into(), None);
+    bundle
+        .inputs
+        .rustc_args
+        .extend(["--cfg", "feature=\"fast\"", "--cfg", "firmware"].map(String::from));
+    seal(&mut bundle);
+    validate(&bundle, &snapshot, &files, &definitions).unwrap();
+    let mut duplicate = bundle.clone();
+    duplicate
+        .inputs
+        .rustc_args
+        .extend(["--cfg", "firmware"].map(String::from));
+    seal(&mut duplicate);
+    assert!(validate(&duplicate, &snapshot, &files, &definitions).is_err());
+    let mut reordered = bundle.clone();
+    reordered.inputs.rustc_args.swap(16, 18);
+    seal(&mut reordered);
+    assert!(validate(&reordered, &snapshot, &files, &definitions).is_err());
+    let mut missing = bundle;
+    missing.inputs.rustc_args.truncate(17);
+    seal(&mut missing);
+    assert!(validate(&missing, &snapshot, &files, &definitions).is_err());
+}
+
+fn successor(kind: CompilerEdgeKind) -> CompilerSuccessor {
+    CompilerSuccessor {
+        target: 0,
+        kind,
+        switch_value: None,
+    }
+}
+fn term(kind: &str) -> CompilerTerminator {
+    let (bundle, ..) = fixture();
+    let mut term = bundle.bodies[0].blocks[0].terminator.clone();
+    term.kind = kind.into();
+    term
+}
+fn known_call(kind: &str) -> CompilerTerminator {
+    let mut value = term(kind);
+    value.call_target = Some(CompilerCallTarget::FunctionDefinition {
+        def_path: "fixture::callee".into(),
+        is_local: true,
+    });
+    value.locals.unknown_effects = vec![CompilerUnknownEffect::Call];
+    value
+}
+
+#[test]
+fn supported_terminator_shapes_match_the_pinned_typed_adapter_contract() {
+    use CompilerEdgeKind as Edge;
+    let mut cases = ["return", "unwind_resume", "unreachable", "coroutine_drop"]
+        .map(term)
+        .to_vec();
+    let mut value = term("goto");
+    value.successors.push(successor(Edge::Normal));
+    cases.push(value);
+    value = term("switch_int");
+    value.successors = vec![
+        CompilerSuccessor {
+            target: 0,
+            kind: Edge::SwitchValue,
+            switch_value: Some(u128::MAX.to_string()),
+        },
+        successor(Edge::Otherwise),
+    ];
+    cases.push(value);
+    value = term("unwind_terminate");
+    value.unwind = Some(CompilerUnwind::Terminate {
+        reason: "abi".into(),
+    });
+    cases.push(value);
+    value = term("drop");
+    value.successors = vec![successor(Edge::Normal), successor(Edge::CoroutineDrop)];
+    value.unwind = Some(CompilerUnwind::Continue);
+    value.locals.unknown_effects = vec![CompilerUnknownEffect::Drop];
+    cases.push(value);
+    value = known_call("call");
+    value.successors = vec![successor(Edge::Normal)];
+    value.normal_return_defs = vec![0];
+    value.unwind = Some(CompilerUnwind::Continue);
+    cases.push(value);
+    value = known_call("call");
+    value.unwind = Some(CompilerUnwind::Unreachable);
+    cases.push(value);
+    cases.push(known_call("tail_call"));
+    value = term("assert");
+    value.successors = vec![successor(Edge::Normal)];
+    value.unwind = Some(CompilerUnwind::Continue);
+    value.assert_expected = Some(true);
+    cases.push(value);
+    value = term("yield");
+    value.successors = vec![successor(Edge::Resume), successor(Edge::CoroutineDrop)];
+    cases.push(value);
+    value = term("false_edge");
+    value.successors = vec![successor(Edge::Normal), successor(Edge::Imaginary)];
+    cases.push(value);
+    value = term("false_unwind");
+    value.successors = vec![successor(Edge::Normal)];
+    value.unwind = Some(CompilerUnwind::Unreachable);
+    cases.push(value);
+    value = term("inline_asm");
+    value.successors = vec![successor(Edge::Normal), successor(Edge::Normal)];
+    value.unwind = Some(CompilerUnwind::Continue);
+    value.locals.unknown_effects = vec![CompilerUnknownEffect::InlineAssembly];
+    cases.push(value);
+    for candidate in cases {
+        let (mut bundle, snapshot, files, definitions) = fixture();
+        bundle.bodies[0].blocks[0].terminator = candidate;
+        validate(&bundle, &snapshot, &files, &definitions).unwrap_or_else(|error| {
+            panic!(
+                "{} rejected: {error}",
+                bundle.bodies[0].blocks[0].terminator.kind
+            )
+        });
+    }
+}
+
+#[test]
+fn malformed_kind_edge_metadata_and_conservative_effects_are_rejected() {
+    use CompilerEdgeKind as Edge;
+    let mut cases = vec![
+        term("unsupported"),
+        term("goto"),
+        term("assert"),
+        term("call"),
+        term("switch_int"),
+    ];
+    let mut value = term("return");
+    value.successors.push(successor(Edge::Normal));
+    cases.push(value);
+    value = term("return");
+    value.assert_expected = Some(false);
+    cases.push(value);
+    value = term("return");
+    value.normal_return_defs = vec![0];
+    cases.push(value);
+    value = known_call("return");
+    cases.push(value);
+    value = term("goto");
+    value.successors = vec![CompilerSuccessor {
+        target: 0,
+        kind: Edge::Normal,
+        switch_value: Some("1".into()),
+    }];
+    cases.push(value);
+    value = term("switch_int");
+    value.successors = vec![successor(Edge::SwitchValue), successor(Edge::Otherwise)];
+    cases.push(value);
+    value = term("switch_int");
+    value.successors = vec![
+        CompilerSuccessor {
+            target: 0,
+            kind: Edge::SwitchValue,
+            switch_value: Some("01".into()),
+        },
+        successor(Edge::Otherwise),
+    ];
+    cases.push(value);
+    value = term("switch_int");
+    value.successors = vec![
+        CompilerSuccessor {
+            target: 0,
+            kind: Edge::SwitchValue,
+            switch_value: Some("1".into()),
+        },
+        CompilerSuccessor {
+            target: 0,
+            kind: Edge::SwitchValue,
+            switch_value: Some("1".into()),
+        },
+        successor(Edge::Otherwise),
+    ];
+    cases.push(value);
+    value = known_call("call");
+    value.unwind = Some(CompilerUnwind::Continue);
+    value.normal_return_defs = vec![0];
+    cases.push(value);
+    value = known_call("call");
+    value.unwind = Some(CompilerUnwind::Continue);
+    value.locals.unknown_effects.clear();
+    cases.push(value);
+    value = known_call("call");
+    value.unwind = Some(CompilerUnwind::Continue);
+    value.call_target = Some(CompilerCallTarget::Indirect {
+        reason: "pointer".into(),
+    });
+    cases.push(value);
+    value = term("goto");
+    value.successors = vec![successor(Edge::Unwind)];
+    cases.push(value);
+    value = term("unwind_terminate");
+    value.unwind = Some(CompilerUnwind::Terminate {
+        reason: "unknown".into(),
+    });
+    cases.push(value);
+    for candidate in cases {
+        let (mut bundle, snapshot, files, definitions) = fixture();
+        bundle.bodies[0].blocks[0].terminator = candidate;
+        assert!(
+            validate(&bundle, &snapshot, &files, &definitions).is_err(),
+            "accepted {:?}",
+            bundle.bodies[0].blocks[0].terminator
+        );
+    }
+}
+
+#[test]
+fn cleanup_edges_are_bijective_with_unwind_metadata_and_cleanup_blocks() {
+    let (mut bundle, snapshot, files, definitions) = fixture();
+    let mut cleanup = bundle.bodies[0].blocks[0].clone();
+    cleanup.index = 1;
+    cleanup.is_cleanup = true;
+    cleanup.terminator = term("unwind_resume");
+    bundle.bodies[0].blocks.push(cleanup);
+    let mut call = known_call("call");
+    call.unwind = Some(CompilerUnwind::Cleanup { target: 1 });
+    call.successors = vec![CompilerSuccessor {
+        target: 1,
+        kind: CompilerEdgeKind::Unwind,
+        switch_value: None,
+    }];
+    bundle.bodies[0].blocks[0].terminator = call;
+    validate(&bundle, &snapshot, &files, &definitions).unwrap();
+    let mut duplicate = bundle.clone();
+    let duplicate_edge = duplicate.bodies[0].blocks[0].terminator.successors[0].clone();
+    duplicate.bodies[0].blocks[0]
+        .terminator
+        .successors
+        .push(duplicate_edge);
+    assert!(validate(&duplicate, &snapshot, &files, &definitions).is_err());
+    let mut absent = bundle.clone();
+    absent.bodies[0].blocks[0].terminator.unwind = None;
+    assert!(validate(&absent, &snapshot, &files, &definitions).is_err());
+    bundle.bodies[0].blocks[1].is_cleanup = false;
+    assert!(validate(&bundle, &snapshot, &files, &definitions).is_err());
+}
+
+#[test]
+fn local_roles_ordering_and_statement_variants_are_validated() {
+    let (bundle, snapshot, files, definitions) = fixture();
+    let mut bad = bundle.clone();
+    bad.bodies[0].locals[0].role = "argument".into();
+    assert!(validate(&bad, &snapshot, &files, &definitions).is_err());
+    bad = bundle.clone();
+    bad.bodies[0].blocks[0].terminator.locals.uses = vec![0, 0];
+    assert!(validate(&bad, &snapshot, &files, &definitions).is_err());
+    bad = bundle.clone();
+    bad.bodies[0].kind = "unknown".into();
+    assert!(validate(&bad, &snapshot, &files, &definitions).is_err());
+    bad = bundle;
+    let span = bad.bodies[0].span.clone();
+    bad.bodies[0].blocks[0].statements.push(CompilerStatement {
+        index: 0,
+        kind: "invented".into(),
+        source_scope: 0,
+        span,
+        locals: Default::default(),
+    });
+    assert!(validate(&bad, &snapshot, &files, &definitions).is_err());
+}
+
+#[test]
+#[ignore = "requires ATLAS_TEST_COMPILER pointing to the separately built pinned adapter"]
+fn actual_pinned_adapter_fixture_passes_strict_import_contract() {
+    let adapter = std::env::var_os("ATLAS_TEST_COMPILER").expect("set ATLAS_TEST_COMPILER");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../adapters/rustc/fixtures");
+    let temp = tempfile::tempdir().unwrap();
+    let output = temp.path().join("compiler.json");
+    let extraction = std::process::Command::new(adapter)
+        .args(["--trusted-local", "--root"])
+        .arg(&root)
+        .args([
+            "--source",
+            "control_flow.rs",
+            "--crate-name",
+            "fixture",
+            "--output",
+        ])
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(
+        extraction.status.success(),
+        "{}",
+        String::from_utf8_lossy(&extraction.stderr)
+    );
+    let bundle: CompilerBundle = serde_json::from_reader(File::open(output).unwrap()).unwrap();
+    let (_, mut snapshot, _, _) = fixture();
+    snapshot.context.crates[0].root_file = "control_flow.rs".into();
+    let files = vec![SourceFile {
+        id: FileId("file:control-flow".into()),
+        path: "control_flow.rs".into(),
+        content_hash: "independent-fixture".into(),
+        text: fs::read_to_string(root.join("control_flow.rs")).unwrap(),
+    }];
+    let imported = validate(&bundle, &snapshot, &files, &[]).unwrap();
+    assert!(imported.bundle.bodies.len() >= 7);
+    assert!(
+        imported
+            .mappings
+            .iter()
+            .all(|mapping| matches!(mapping.mapping, CompilerDefinitionMapping::Unmapped { .. }))
+    );
 }
