@@ -2,14 +2,19 @@ import { useState } from "react";
 import { ArrowLeft, ArrowRight, Workflow } from "lucide-react";
 import type {
   AnalysisResponse,
+  CompilerBody,
   Definition,
   MirPoint,
   ReachingDefinitions,
   Snapshot,
+  SourceWindow,
+  Span,
 } from "../api/types";
 import { params, request } from "../api/client";
 import { useResource } from "../state";
 import { CoverageNotice, ErrorNotice, IconButton, Loading } from "./common";
+import { dataflowSource } from "../compiler-source";
+import { CompilerSourceLink } from "./CompilerSourceLink";
 
 function point(value: MirPoint) {
   switch (value.kind) {
@@ -28,10 +33,16 @@ export function DataflowView({
   snapshot,
   definition,
   importId,
+  body,
+  source,
+  onSpan,
 }: {
   snapshot: Snapshot;
   definition: Definition;
   importId: string;
+  body: CompilerBody;
+  source?: SourceWindow;
+  onSpan: (span: Span) => void;
 }) {
   const scope = `${snapshot.id}:${snapshot.context.id}:${definition.id}:${importId}`;
   const [run, setRun] = useState({ scope: "", count: 0 });
@@ -52,6 +63,12 @@ export function DataflowView({
       ),
   );
   const data = result.data?.analysis;
+  const mappedBody =
+    data?.body_id === body.body_id &&
+    result.data?.snapshot_id === snapshot.id &&
+    result.data?.context_id === snapshot.context.id
+      ? body
+      : undefined;
   const partial = Boolean(
     data &&
     (data.envelope.truncated ||
@@ -171,14 +188,44 @@ export function DataflowView({
                                 <strong>_{use.local}</strong>
                                 <br />
                                 <code>{point(use.point)}</code>
+                                <div>
+                                  <CompilerSourceLink
+                                    mapping={dataflowSource(
+                                      mappedBody,
+                                      use,
+                                      "use",
+                                    )}
+                                    source={source}
+                                    snapshotId={snapshot.id}
+                                    fileId={definition.file_id}
+                                    onSpan={onSpan}
+                                    label={`Show source for use _${use.local} at ${point(use.point)}`}
+                                  />
+                                </div>
                               </td>
                               <td>
                                 {use.reaching.length
                                   ? use.reaching
                                       .slice(0, 100)
-                                      .map((definition) => (
-                                        <div key={point(definition.point)}>
-                                          <code>{point(definition.point)}</code>
+                                      .map((reaching) => (
+                                        <div
+                                          key={`${reaching.local}:${point(reaching.point)}`}
+                                        >
+                                          <code>{point(reaching.point)}</code>
+                                          <div>
+                                            <CompilerSourceLink
+                                              mapping={dataflowSource(
+                                                mappedBody,
+                                                reaching,
+                                                "definition",
+                                              )}
+                                              source={source}
+                                              snapshotId={snapshot.id}
+                                              fileId={definition.file_id}
+                                              onSpan={onSpan}
+                                              label={`Show source for definition _${reaching.local} at ${point(reaching.point)}`}
+                                            />
+                                          </div>
                                         </div>
                                       ))
                                   : "No tracked definition"}

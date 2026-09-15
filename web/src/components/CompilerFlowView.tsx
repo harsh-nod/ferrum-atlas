@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ArrowLeft, ArrowRight, FileCode2 } from "lucide-react";
+import { ArrowLeft, ArrowRight } from "lucide-react";
 import type {
   CompilerFlowPage,
   CompilerLocalEffects,
@@ -13,6 +13,7 @@ import { params, request } from "../api/client";
 import { useResource } from "../state";
 import { CoverageNotice, ErrorNotice, IconButton, Loading } from "./common";
 import { DataflowView } from "./DataflowView";
+import { CompilerSourceLink } from "./CompilerSourceLink";
 
 function effects(value: CompilerLocalEffects) {
   return (
@@ -68,37 +69,15 @@ export function CompilerFlowView({
         signal,
       ),
   );
-  const anchor = (mapping: CompilerSourceMapping) => {
-    if (mapping.status === "unavailable")
-      return <span className="muted">{mapping.reason}</span>;
-    if (
-      source.data?.path === mapping.path &&
-      source.data.file_id === definition?.file_id
-    )
-      return (
-        <button
-          type="button"
-          className="analysis-source"
-          onClick={() =>
-            onSpan({
-              file_id: source.data!.file_id,
-              start: mapping.start_byte,
-              end: mapping.end_byte,
-            })
-          }
-        >
-          <FileCode2 size={13} />
-          <span>
-            {mapping.path}:{mapping.start_byte}..{mapping.end_byte}
-          </span>
-        </button>
-      );
-    return (
-      <code>
-        {mapping.path}:{mapping.start_byte}..{mapping.end_byte}
-      </code>
-    );
-  };
+  const anchor = (mapping: CompilerSourceMapping) => (
+    <CompilerSourceLink
+      mapping={mapping}
+      source={source.data}
+      snapshotId={snapshot.id}
+      fileId={definition!.file_id}
+      onSpan={onSpan}
+    />
+  );
   return (
     <div className="document-view compiler-flow-view">
       {!definition && <p className="muted">No definition selected.</p>}
@@ -300,6 +279,9 @@ export function CompilerFlowView({
               snapshot={snapshot}
               definition={definition}
               importId={importId}
+              body={page.data.body}
+              source={source.data}
+              onSpan={onSpan}
             />
           )}
           <details
