@@ -254,3 +254,95 @@ fn observation_sparse_oversize_and_trailing_bytes_are_rejected() {
     fs::write(&path, bytes).unwrap();
     assert!(load(&root, &snapshot.id, &imported.id).is_err());
 }
+
+#[test]
+fn precancelled_evidence_helpers_do_not_read_create_locks_or_publish() {
+    let temp = tempfile::tempdir().unwrap();
+    let directory = ScopedDirectory::open(temp.path(), false).unwrap().unwrap();
+    let target = Path::new("cancelled.json");
+    for error in [
+        directory.read_with_stop(target, 100, &|| true).unwrap_err(),
+        directory.json_names_with_stop(100, &|| true).unwrap_err(),
+        directory.import_lock_with_stop(&|| true).unwrap_err(),
+        directory.publish_with_stop(target, b"never published", &|| true).unwrap_err(),
+    ] {
+        assert!(error.to_string().contains("cancelled"));
+    }
+    assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 0);
+}
+
+#[test]
+fn contended_evidence_lock_honors_cancellation_without_waiting_for_expiry() {
+    use std::cell::Cell;
+    let temp = tempfile::tempdir().unwrap();
+    let directory = ScopedDirectory::open(temp.path(), false).unwrap().unwrap();
+    let held = directory.import_lock().unwrap();
+    let checks = Cell::new(0);
+    let error = directory.import_lock_with_stop(&|| {
+        checks.set(checks.get() + 1);
+        checks.get() == 8
+    }).unwrap_err();
+    assert!(error.to_string().contains("cancelled"));
+    assert_eq!(checks.get(), 8);
+    assert!(directory.json_names(100).unwrap().is_empty());
+    drop(held);
+    drop(directory.import_lock_with_stop(&|| false).unwrap());
+}
+
+#[test]
+fn evidence_scans_and_reads_never_return_a_cancelled_prefix() {
+    use std::cell::Cell;
+    let temp = tempfile::tempdir().unwrap();
+    let directory = ScopedDirectory::open(temp.path(), false).unwrap().unwrap();
+    for number in 0..10 {
+        fs::write(temp.path().join(format!("{number}.json")), b"{}").unwrap();
+    }
+    let checks = Cell::new(0);
+    let stop = || { checks.set(checks.get() + 1); checks.get() == 5 };
+    assert!(directory.json_names_with_stop(100, &stop).unwrap_err().to_string().contains("cancelled"));
+    let large = vec![b'x'; 192 * 1024];
+    fs::write(temp.path().join("large.json"), &large).unwrap();
+    assert_eq!(directory.json_names(100).unwrap().len(), 11);
+    checks.set(0);
+    assert!(directory.read_with_stop(Path::new("large.json"), large.len() as u64, &stop).unwrap_err().to_string().contains("cancelled"));
+    assert_eq!(directory.read(Path::new("large.json"), large.len() as u64).unwrap(), large);
+    assert!(directory.read_with_stop(Path::new("large.json"), 10, &|| false).is_err());
+}
+
+#[test]
+fn cancellation_at_every_publication_boundary_preserves_only_committed_objects() {
+    use std::cell::Cell;
+    let temp = tempfile::tempdir().unwrap();
+    let directory = ScopedDirectory::open(temp.path(), false).unwrap().unwrap();
+    let target = Path::new("review.json");
+    let payload = vec![b'x'; 192 * 1024];
+    let checks = Cell::new(0);
+    directory.publish_with_stop(target, &payload, &|| {
+        checks.set(checks.get() + 1);
+        false
+    }).unwrap();
+    let checkpoints = checks.get();
+    assert!(checkpoints > 5);
+    for stop_at in 1..=checkpoints {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = ScopedDirectory::open(temp.path(), false).unwrap().unwrap();
+        checks.set(0);
+        let error = directory.publish_with_stop(target, &payload, &|| {
+            checks.set(checks.get() + 1);
+            checks.get() == stop_at
+        }).unwrap_err();
+        assert!(error.to_string().contains("cancelled"));
+        let exists = temp.path().join(target).exists();
+        // The last checkpoint is after rename and directory fsync. A retry must
+        // find that immutable object, even though acknowledgement was cancelled.
+        assert_eq!(exists, stop_at == checkpoints);
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), usize::from(exists));
+        if exists {
+            assert_eq!(fs::read(temp.path().join(target)).unwrap(), payload);
+            assert!(!directory.publish(target, b"must not replace").unwrap());
+            assert_eq!(fs::read(temp.path().join(target)).unwrap(), payload);
+        } else {
+            assert!(directory.publish(target, &payload).unwrap());
+        }
+    }
+}

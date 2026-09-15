@@ -88,33 +88,73 @@ impl ScopedDirectory {
     }
 
     fn read(&self, name: &Path, max_bytes: u64) -> Result<Vec<u8>> {
+        self.read_with_stop(name, max_bytes, &|| false)
+    }
+
+    fn read_with_stop(
+        &self,
+        name: &Path,
+        max_bytes: u64,
+        stopped: &dyn Fn() -> bool,
+    ) -> Result<Vec<u8>> {
         use rustix::fs::{Mode, OFlags, openat};
+        evidence_checkpoint(stopped)?;
         Self::child(name)?;
-        let file = File::from(openat(
+        let mut file = File::from(openat(
             &self.0,
             name,
             OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
             Mode::empty(),
         )?);
+        evidence_checkpoint(stopped)?;
         let metadata = file.metadata()?;
+        evidence_checkpoint(stopped)?;
         ensure!(metadata.is_file(), "evidence object must be a regular file");
         ensure!(
             metadata.len() <= max_bytes,
             "evidence object exceeds byte budget"
         );
         let mut bytes = Vec::new();
-        file.take(max_bytes + 1).read_to_end(&mut bytes)?;
-        ensure!(
-            bytes.len() as u64 <= max_bytes,
-            "evidence object grew beyond byte budget"
-        );
+        let mut buffer = [0; 64 * 1024];
+        loop {
+            evidence_checkpoint(stopped)?;
+            let count = match file.read(&mut buffer) {
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                result => result?,
+            };
+            evidence_checkpoint(stopped)?;
+            ensure!(
+                (bytes.len() as u64).saturating_add(count as u64) <= max_bytes,
+                "evidence object grew beyond byte budget"
+            );
+            if count == 0 {
+                break;
+            }
+            bytes.extend_from_slice(&buffer[..count]);
+        }
         Ok(bytes)
     }
 
     fn json_names(&self, max_objects: usize) -> Result<Vec<PathBuf>> {
+        self.json_names_with_stop(max_objects, &|| false)
+    }
+
+    fn json_names_with_stop(
+        &self,
+        max_objects: usize,
+        stopped: &dyn Fn() -> bool,
+    ) -> Result<Vec<PathBuf>> {
+        evidence_checkpoint(stopped)?;
         let mut names = Vec::new();
         let mut count = 0;
-        for entry in rustix::fs::Dir::read_from(&self.0)? {
+        let mut directory = rustix::fs::Dir::read_from(&self.0)?;
+        loop {
+            evidence_checkpoint(stopped)?;
+            let entry = directory.next();
+            evidence_checkpoint(stopped)?;
+            let Some(entry) = entry else {
+                break;
+            };
             let entry = entry?;
             let name = entry.file_name().to_bytes();
             if name == b"." || name == b".." {
@@ -138,18 +178,26 @@ impl ScopedDirectory {
             }
         }
         names.sort();
+        evidence_checkpoint(stopped)?;
         Ok(names)
     }
 
     fn import_lock(&self) -> Result<File> {
+        self.import_lock_with_stop(&|| false)
+    }
+
+    fn import_lock_with_stop(&self, stopped: &dyn Fn() -> bool) -> Result<File> {
         use rustix::fs::{FlockOperation, Mode, OFlags, fchmod, flock, openat};
+        evidence_checkpoint(stopped)?;
         let lock = File::from(openat(
             &self.0,
             ".import.lock",
             OFlags::RDWR | OFlags::CREATE | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
             Mode::RUSR | Mode::WUSR,
         )?);
+        evidence_checkpoint(stopped)?;
         let metadata = lock.metadata()?;
+        evidence_checkpoint(stopped)?;
         ensure!(
             metadata.is_file() && metadata.len() == 0 && metadata.nlink() == 1,
             "import lock must be a regular, empty, singly-linked private file"
@@ -158,12 +206,19 @@ impl ScopedDirectory {
             metadata.uid() == self.0.metadata()?.uid(),
             "import lock owner differs from its scope"
         );
+        evidence_checkpoint(stopped)?;
         fchmod(&lock, Mode::RUSR | Mode::WUSR)?;
+        evidence_checkpoint(stopped)?;
         let deadline = Instant::now() + IMPORT_LOCK_TIMEOUT;
         loop {
+            evidence_checkpoint(stopped)?;
             match flock(&lock, FlockOperation::NonBlockingLockExclusive) {
-                Ok(()) => return Ok(lock),
+                Ok(()) => {
+                    evidence_checkpoint(stopped)?;
+                    return Ok(lock);
+                }
                 Err(rustix::io::Errno::WOULDBLOCK) | Err(rustix::io::Errno::INTR) => {
+                    evidence_checkpoint(stopped)?;
                     ensure!(
                         Instant::now() < deadline,
                         "evidence import lock deadline exceeded"
@@ -176,14 +231,30 @@ impl ScopedDirectory {
     }
 
     fn publish(&self, name: &Path, bytes: &[u8]) -> Result<bool> {
+        self.publish_with_stop(name, bytes, &|| false)
+    }
+
+    fn publish_with_stop(
+        &self,
+        name: &Path,
+        bytes: &[u8],
+        stopped: &dyn Fn() -> bool,
+    ) -> Result<bool> {
+        evidence_checkpoint(stopped)?;
         Self::child(name)?;
         // This kernel-owned path names the held descriptor, never the mutable user path.
         let pinned = PathBuf::from(format!("/proc/self/fd/{}", self.0.as_raw_fd()));
         let mut temporary = tempfile::Builder::new()
             .prefix(".import-")
             .tempfile_in(pinned)?;
-        temporary.write_all(bytes)?;
+        evidence_checkpoint(stopped)?;
+        for chunk in bytes.chunks(64 * 1024) {
+            evidence_checkpoint(stopped)?;
+            temporary.write_all(chunk)?;
+            evidence_checkpoint(stopped)?;
+        }
         temporary.as_file().sync_all()?;
+        evidence_checkpoint(stopped)?;
         match rustix::fs::renameat_with(
             &self.0,
             temporary
@@ -195,13 +266,24 @@ impl ScopedDirectory {
             rustix::fs::RenameFlags::NOREPLACE,
         ) {
             Ok(()) => {
+                // Publication already happened. Finish durability even if cancellation
+                // raced rename; callers may retry, but must never roll this object back.
                 self.0.sync_all()?;
+                evidence_checkpoint(stopped)?;
                 Ok(true)
             }
-            Err(rustix::io::Errno::EXIST) => Ok(false),
+            Err(rustix::io::Errno::EXIST) => {
+                evidence_checkpoint(stopped)?;
+                Ok(false)
+            }
             Err(error) => Err(error.into()),
         }
     }
+}
+
+fn evidence_checkpoint(stopped: &dyn Fn() -> bool) -> Result<()> {
+    ensure!(!stopped(), "evidence operation cancelled");
+    Ok(())
 }
 
 fn scope(root: &Path, snapshot: &SnapshotId) -> PathBuf {
