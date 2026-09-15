@@ -1682,6 +1682,52 @@ code,
   font-size: 11px;
   overflow-wrap: anywhere;
 }
+.flow-view > .panel-heading {
+  flex-wrap: wrap;
+}
+.flow-view > .panel-heading select {
+  min-width: 0;
+  max-width: 100%;
+  flex: 1;
+}
+.compiler-empty {
+  padding: 10px 22px;
+}
+.compiler-flow-view {
+  min-height: 0;
+}
+.compiler-flow-view .analysis-section-heading {
+  flex-wrap: wrap;
+}
+.compiler-block-table {
+  table-layout: fixed;
+  min-width: 650px;
+}
+.compiler-block-table th:first-child {
+  width: 70px;
+  min-width: 70px;
+}
+.compiler-block-table td {
+  overflow-wrap: anywhere;
+}
+.compiler-block-table ul {
+  padding-left: 18px;
+}
+.compiler-statements {
+  padding-left: 18px;
+}
+.compiler-statements li {
+  margin: 12px 0;
+}
+.compiler-unknown {
+  color: #8b662d;
+}
+.compiler-pagination {
+  display: flex;
+  justify-content: end;
+  gap: 8px;
+  margin: 8px 0 16px;
+}
 .trace-divergence {
   border-left: 3px solid #aa773b;
   padding-left: 14px;

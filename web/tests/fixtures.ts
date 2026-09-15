@@ -265,6 +265,7 @@ export async function mockApi(
       return route.fulfill({ json: body });
     }
     if (url.pathname === "/v1/observations") return route.fulfill({ json: [] });
+    if (url.pathname === "/v1/compiler") return route.fulfill({ json: [] });
     return route.fulfill({
       status: 404,
       json: {

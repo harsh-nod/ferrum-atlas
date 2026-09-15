@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { GitCompareArrows, ShieldCheck } from "lucide-react";
 import type {
   Capabilities,
+  CompilerImportSummary,
   Definition,
   DiffResponse,
   Evidence,
@@ -17,6 +18,7 @@ import { CoverageNotice, ErrorNotice, Loading } from "./common";
 import { SourcePane } from "./SourcePane";
 import { JobsView } from "./JobsView";
 import { TraceCompareView } from "./TraceCompareView";
+import { CompilerFlowView } from "./CompilerFlowView";
 
 export function EvidenceList({ evidence }: { evidence: Evidence[] }) {
   return (
@@ -286,8 +288,20 @@ export function FlowView({
   definition?: Definition;
   onSpan: (span: Span) => void;
 }) {
+  const [compilerImport, setCompilerImport] = useState("");
+  const imports = useResource<CompilerImportSummary[]>(
+    `${snapshot.id}:${snapshot.context.id}:compiler-imports`,
+    (signal) =>
+      request(
+        "/compiler" +
+          params({ snapshot_id: snapshot.id, context_id: snapshot.context.id }),
+        signal,
+      ),
+  );
   const flow = useResource<FunctionFlow>(
-    definition ? snapshot.id + ":" + definition.id + ":flow" : "",
+    definition && !compilerImport
+      ? snapshot.id + ":" + definition.id + ":flow"
+      : "",
     (signal) =>
       request(
         "/flow/" +
@@ -303,9 +317,40 @@ export function FlowView({
   return (
     <section className="flow-view">
       <div className="panel-heading">
-        <strong>Source flow</strong>
-        <span className="muted">Compiler CFG unavailable</span>
+        <strong>{compilerImport ? "Compiler flow" : "Source flow"}</strong>
+        <select
+          aria-label="Flow phase"
+          value={compilerImport}
+          onChange={(event) => setCompilerImport(event.target.value)}
+        >
+          <option value="">Source flow</option>
+          {imports.data?.map((item) => (
+            <option key={item.id} value={item.id}>
+              {item.phase} / {item.compiler.release} / {item.id.slice(-10)}
+            </option>
+          ))}
+          {compilerImport &&
+            !imports.data?.some((item) => item.id === compilerImport) && (
+              <option value={compilerImport}>
+                Selected compiler import unavailable
+              </option>
+            )}
+        </select>
       </div>
+      <ErrorNotice error={imports.error} />
+      {imports.data?.length === 0 && (
+        <p className="muted compiler-empty">
+          No compiler artifact imported for this snapshot.
+        </p>
+      )}
+      {compilerImport && (
+        <CompilerFlowView
+          snapshot={snapshot}
+          definition={definition}
+          importId={compilerImport}
+          onSpan={onSpan}
+        />
+      )}
       {flow.loading && <Loading label="Loading flow" />}
       <ErrorNotice error={flow.error} />
       {flow.data && (
