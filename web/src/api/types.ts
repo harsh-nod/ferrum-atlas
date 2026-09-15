@@ -164,3 +164,7 @@ export type SourceMaintainability = { envelope: AnalysisEnvelope, input_digest: 
  * Present only after both complete lexical and syntax traversals.
  */
 metrics: SyntaxMetrics | null, locations_truncated: boolean, code_lines: Array<Span>, nesting_sites: Array<NestingSite>, unsafe_sites: Array<UnsafeBoundary>, unknowns: Array<MetricUnknown>, };
+export type CompilerComplexityLimits = { max_blocks: number, max_edges: number, max_response_bytes: number, };
+export type CfgComplexityMetrics = { nodes: number, edges: number, components: number, cyclomatic: number, runtime_blocks: number, runtime_edges: number, synthetic_exit_edges: number, excluded_imaginary_edges: number, };
+export type CfgExitSite = { block: number, kind: string, span: CompilerSourceMapping, };
+export type CompilerComplexity = { envelope: AnalysisEnvelope, input_digest: string, definition_id: DefinitionId, import_id: string, body_id: string, compiler: CompilerIdentity, phase: string, input_manifest_hash: string, panic_strategy: string, body_span: CompilerSourceMapping, formula: string, metrics: CfgComplexityMetrics | null, locations_truncated: boolean, reachable_blocks: Array<number>, unreachable_blocks: Array<number>, exit_sites: Array<CfgExitSite>, };
