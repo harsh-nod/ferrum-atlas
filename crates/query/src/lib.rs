@@ -89,6 +89,42 @@ impl QueryEngine {
         Ok(self.store.snapshot(id)?)
     }
 
+    pub fn set_snapshot_pin(
+        &self,
+        id: &SnapshotId,
+        request: &SnapshotPinRequest,
+        retained: bool,
+    ) -> Result<SnapshotPinState> {
+        let snapshot = self.snapshot(id)?;
+        if snapshot.context.id != request.context_id {
+            return Err(Error::ContextMismatch);
+        }
+        if request.name.is_empty()
+            || request.name.len() > 128
+            || !request
+                .name
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_'))
+        {
+            return Err(Error::InvalidQuery(
+                "pin name requires 1..128 ASCII letters, digits, hyphens or underscores".into(),
+            ));
+        }
+        // Scope the storage key before mutation; a bookmark label is never a global pin capability.
+        let key = digest("bookmark-pin", &(id, &request.context_id, &request.name));
+        if retained {
+            self.store.pin(id, &key)?;
+        } else {
+            self.store.unpin(&key)?;
+        }
+        Ok(SnapshotPinState {
+            snapshot_id: id.clone(),
+            context_id: request.context_id.clone(),
+            name: request.name.clone(),
+            retained,
+        })
+    }
+
     fn reader(
         &self,
         snapshot: &SnapshotId,

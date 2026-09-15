@@ -112,6 +112,8 @@ pub fn router(engine: QueryEngine, config: &ServerConfig) -> anyhow::Result<Rout
         .route("/capabilities", get(|| async { Json(capabilities()) }))
         .route("/snapshots", get(snapshots))
         .route("/snapshots/{id}", get(snapshot))
+        .route("/snapshots/{id}/pin", post(advanced::pin_snapshot))
+        .route("/snapshots/{id}/unpin", post(advanced::unpin_snapshot))
         .route("/search", get(search))
         .route("/definitions/{id}", get(definition))
         .route("/source/{id}", get(source))
@@ -803,6 +805,8 @@ mod tests {
             "/v1/graph/path",
             "/v1/queries/impact",
             "/v1/traces/compare",
+            "/v1/snapshots/id/pin",
+            "/v1/snapshots/id/unpin",
         ] {
             let response = app
                 .clone()

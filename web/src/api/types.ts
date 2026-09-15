@@ -40,6 +40,8 @@ export type DefinitionChange = { kind: string, before: Definition | null, after:
 export type DiffResponse = { before: SnapshotId, after: SnapshotId, context_changed: boolean, changes: Array<DefinitionChange>, impact_candidates: Array<Definition>, coverage: Coverage, truncated: boolean, };
 export type Capabilities = { api_version: string, schema_version: number, analysis_levels: Array<string>, graph_families: Array<string>, trust_modes: Array<string>, limitations: Array<string>, };
 export type ApiError = { code: string, message: string, correlation_id: string, };
+export type SnapshotPinRequest = { context_id: ContextId, name: string, };
+export type SnapshotPinState = { snapshot_id: SnapshotId, context_id: ContextId, name: string, retained: boolean, };
 export type TestOutcome = "pass" | "fail" | "expected_fail" | "unexpected_pass" | "timeout" | "infrastructure_error" | "not_run" | "unknown";
 export type ArtifactIdentity = { sha256: string, source_id: SourceId, context_id: ContextId, producer: string, };
 export type TestObservation = { name: string, outcome: TestOutcome, elapsed_ns: string | null, timeout_ns: string | null, reason: string | null, definition_ids: Array<DefinitionId>, };
@@ -48,6 +50,64 @@ export type TraceStream = { id: string, process_or_device: string, thread_or_har
 export type ObservationBundle = { schema_version: number, snapshot_id: SnapshotId, artifact: ArtifactIdentity, tests: Array<TestObservation>, streams: Array<TraceStream>, limitations: Array<string>, };
 export type ObservationSummary = { id: string, snapshot_id: SnapshotId, artifact: ArtifactIdentity, test_count: number, event_count: number, clock_domains: Array<string>, limitations: Array<string>, };
 export type ObservationWindow = { summary: ObservationSummary, tests: Array<TestObservation>, streams: Array<TraceStream>, offset: number, next_offset: number | null, truncated: boolean, };
+export type JobLevel = "syntax" | "semantic";
+export type JobPriority = "foreground" | "workspace" | "background";
+export type JobRequest = { profile: string, level: JobLevel, priority: JobPriority, context: BuildContext | null, };
+export type JobStatus = "queued" | "running" | "cancelling" | "cancelled" | "succeeded" | "failed";
+export type JobStage = "queued" | "capture" | "syntax" | "semantics" | "validation" | "publication" | "finished";
+export type JobEvent = { sequence: number, timestamp_ms: string, stage: JobStage, status: JobStatus, };
+export type JobRecord = { id: string, request: JobRequest, status: JobStatus, created_ms: string, snapshot_id: SnapshotId | null, message: string | null, events: Array<JobEvent>, };
+export type AnalysisResponse<T> = { api_version: string, snapshot_id: SnapshotId, context_id: ContextId, analysis: T, };
+export type PathRequest = { graph: GraphRequest, target: DefinitionId | null, };
+export type TraceAlignmentRequest = { before_snapshot_id: SnapshotId, before_context_id: ContextId, before_observation_id: string, after_snapshot_id: SnapshotId, after_context_id: ContextId, after_observation_id: string, before_stream_id: string, after_stream_id: string, before_offset: number, after_offset: number, max_events: number, max_anchors: number, };
+export type TraceAlignmentResponse<T> = { before: SnapshotId, after: SnapshotId, before_context: ContextId, after_context: ContextId, comparison: T, };
+export type CompilerBundle = { schema_version: number, compiler: CompilerIdentity, inputs: CompilerInputs, phase: string, bodies: Array<CompilerBody>, limitations: Array<string>, };
+export type CompilerIdentity = { adapter: string, adapter_version: string, release: string, commit_hash: string, commit_date: string, host: string, llvm_version: string, };
+export type CompilerInputs = { manifest_hash: string, files: Array<CompilerSourceFile>, crate_name: string, crate_root: string, edition: string, target: string, panic_strategy: string, mir_opt_level: number, rustc_args: Array<string>, environment_policy: string, trust: string, compiled_artifact: CompilerArtifact | null, };
+export type CompilerArtifact = { kind: string, sha256: string, };
+export type CompilerSourceFile = { path: string, sha256: string, byte_length: number, };
+export type CompilerSourceMapping = { "status": "exact", path: string, start_byte: number, end_byte: number, } | { "status": "unavailable", reason: string, };
+export type CompilerBody = {
+/**
+ * Input-manifest-local identity, never a source DefinitionId.
+ */
+body_id: string, def_path: string, kind: string, span: CompilerSourceMapping, argument_count: number, locals: Array<CompilerLocal>, source_scopes: Array<CompilerSourceScope>, blocks: Array<CompilerBlock>, };
+export type CompilerLocal = { index: number, role: string, names: Array<string>,
+/**
+ * Display-only compiler type spelling; consumers must not parse it.
+ */
+type_display: string, source_scope: number, span: CompilerSourceMapping, };
+export type CompilerSourceScope = { index: number, parent: number | null, span: CompilerSourceMapping, inlined_def_path: string | null, };
+export type CompilerBlock = { index: number, is_cleanup: boolean, statements: Array<CompilerStatement>, terminator: CompilerTerminator, };
+export type CompilerStatement = { index: number, kind: string, source_scope: number, span: CompilerSourceMapping, locals: CompilerLocalEffects, };
+export type CompilerLocalEffects = {
+/**
+ * Whole-local assignments only, not writes through aliases or projections.
+ */
+defs: Array<number>,
+/**
+ * Conservative local references, including address-taking and projections.
+ */
+uses: Array<number>, moves: Array<number>, storage_live: Array<number>, storage_dead: Array<number>, unknown_effects: Array<CompilerUnknownEffect>, };
+export type CompilerUnknownEffect = "call" | "indirect_call" | "pointer_aliasing" | "borrow_aliasing" | "partial_write" | "drop" | "inline_assembly" | "intrinsic" | "retag" | "external_state";
+export type CompilerTerminator = { kind: string, source_scope: number, span: CompilerSourceMapping, locals: CompilerLocalEffects,
+/**
+ * Call destinations become initialized only on the normal-return edge.
+ */
+normal_return_defs: Array<number>, successors: Array<CompilerSuccessor>, unwind: CompilerUnwind | null, call_target: CompilerCallTarget | null, assert_expected: boolean | null, };
+export type CompilerSuccessor = { target: number, kind: CompilerEdgeKind,
+/**
+ * Unsigned MIR bit pattern, as decimal text to preserve all 128 bits.
+ */
+switch_value: string | null, };
+export type CompilerEdgeKind = "normal" | "switch_value" | "otherwise" | "unwind" | "resume" | "coroutine_drop" | "imaginary";
+export type CompilerUnwind = { "kind": "continue" } | { "kind": "unreachable" } | { "kind": "terminate", reason: string, } | { "kind": "cleanup", target: number, };
+export type CompilerCallTarget = { "kind": "function_definition", def_path: string, is_local: boolean, } | { "kind": "indirect", reason: string, };
+export type CompilerDefinitionMapping = { "status": "matched", definition_id: DefinitionId, } | { "status": "unmapped", reason: string, };
+export type CompilerBodyMapping = { body_id: string, mapping: CompilerDefinitionMapping, };
+export type CompilerImport = { snapshot_id: SnapshotId, context_id: ContextId, bundle: CompilerBundle, mappings: Array<CompilerBodyMapping>, coverage: Coverage, };
+export type CompilerImportSummary = { id: string, snapshot_id: SnapshotId, context_id: ContextId, compiler: CompilerIdentity, phase: string, body_count: number, mapped_count: number, coverage: Coverage, };
+export type CompilerFlowPage = { snapshot_id: SnapshotId, context_id: ContextId, import_id: string, definition_id: DefinitionId, compiler: CompilerIdentity, phase: string, input_manifest_hash: string, panic_strategy: string, body: CompilerBody, offset: number, total_blocks: number, next_offset: number | null, coverage: Coverage, };
 export type AnalysisEnvelope = { algorithm_version: string, coverage: Coverage, truncated: boolean, cancelled: boolean, deadline_reached: boolean, assumptions: Array<string>, };
 export type AnalysisLimits = { max_nodes: number, max_edges: number, max_visits: number, max_depth: number, max_response_bytes: number, };
 export type UnknownFrontier = { source: DefinitionId, relation_id: RelationId, target_definition_id: DefinitionId | null, reason: UnknownReason, };

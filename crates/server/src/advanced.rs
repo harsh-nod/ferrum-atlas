@@ -1,5 +1,27 @@
 use super::*;
 
+pub(super) async fn pin_snapshot(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(request): Json<SnapshotPinRequest>,
+) -> Result<Json<SnapshotPinState>, HttpError> {
+    execute(state, move |q| {
+        q.set_snapshot_pin(&SnapshotId(id), &request, true)
+    })
+    .await
+}
+
+pub(super) async fn unpin_snapshot(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(request): Json<SnapshotPinRequest>,
+) -> Result<Json<SnapshotPinState>, HttpError> {
+    execute(state, move |q| {
+        q.set_snapshot_pin(&SnapshotId(id), &request, false)
+    })
+    .await
+}
+
 pub(super) async fn compiler_imports(
     State(state): State<AppState>,
     Query(pin): Query<Pinned>,

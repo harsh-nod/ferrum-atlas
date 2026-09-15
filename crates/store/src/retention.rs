@@ -248,7 +248,20 @@ impl Store {
         }
         let _lease = self.lease(false, &|| false)?;
         self.snapshot(id)?;
-        self.connect()?.execute("INSERT INTO snapshot_pins VALUES(?1,?2) ON CONFLICT(name) DO UPDATE SET snapshot_id=excluded.snapshot_id", params![name,id.0])?;
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let count: i64 =
+            transaction.query_row("SELECT count(*) FROM snapshot_pins", [], |row| row.get(0))?;
+        let exists: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM snapshot_pins WHERE name=?1)",
+            [name],
+            |row| row.get(0),
+        )?;
+        if count >= 4096 && !exists {
+            return Err(Error::BudgetExhausted);
+        }
+        transaction.execute("INSERT INTO snapshot_pins VALUES(?1,?2) ON CONFLICT(name) DO UPDATE SET snapshot_id=excluded.snapshot_id", params![name,id.0])?;
+        transaction.commit()?;
         Ok(())
     }
 

@@ -124,7 +124,39 @@ test("real capture, HTTP, source graph, observations, edit and restart", async (
       "pub fn step(value: u32) -> u32 { leaf(value) }\nfn leaf(value: u32) -> u32 { value + 1 }\n",
     );
     run(["init", "--workspace", workspace]);
-    const before = run(["index"]) as Snapshot;
+    const before = run([
+      "index",
+      "--target",
+      "x86_64-unknown-linux-gnu",
+      "--no-default-features",
+    ]) as Snapshot;
+    let compilerImport: { id: string; mapped_count: number } | undefined;
+    if (process.env.ATLAS_RUSTC) {
+      const compilerBundle = join(temp, "compiler.json");
+      execFileSync(
+        process.env.ATLAS_RUSTC,
+        [
+          "--trusted-local",
+          "--root",
+          workspace,
+          "--source",
+          "src/lib.rs",
+          "--crate-name",
+          "live_pilot",
+          "--output",
+          compilerBundle,
+        ],
+        { timeout: 30_000, stdio: ["ignore", "pipe", "pipe"] },
+      );
+      compilerImport = run([
+        "import-compiler",
+        "--snapshot",
+        before.id,
+        "--bundle",
+        compilerBundle,
+      ]);
+      expect(compilerImport!.mapped_count).toBeGreaterThanOrEqual(4);
+    }
     await start();
     const pin = (snapshot: Snapshot) =>
       new URLSearchParams({
@@ -255,6 +287,22 @@ test("real capture, HTTP, source graph, observations, edit and restart", async (
     expect(new URL(page.url()).searchParams.get("edge")).toBe(midpoint.id);
     expect(errors).toEqual([]);
 
+    if (compilerImport) {
+      await page.getByRole("button", { name: "Flow", exact: true }).click();
+      await page.getByLabel("Flow phase").selectOption(compilerImport.id);
+      await expect(
+        page.getByRole("heading", { name: "Compiler Basic Blocks" }),
+      ).toBeVisible();
+      await expect(page.locator(".compiler-block-table")).toContainText(
+        "return",
+      );
+      await page.screenshot({
+        path: testInfo.outputPath("live-compiler-flow.png"),
+        fullPage: true,
+      });
+      await page.getByRole("button", { name: "Explore", exact: true }).click();
+    }
+
     const artifact = join(temp, "artifact");
     await writeFile(artifact, "controlled observation fixture; never executed");
     const bundle: ObservationBundle = {
@@ -333,8 +381,14 @@ test("real capture, HTTP, source graph, observations, edit and restart", async (
       join(workspace, "src/engine.rs"),
       "pub fn step(value: u32) -> u32 { leaf(value) + 7 }\nfn leaf(value: u32) -> u32 { value + 1 }\n",
     );
-    const queued = await api<JobRecord>("/jobs", { profile: "default", level: "semantic", priority: "foreground" });
-    const events = await fetch(`${base}/v1/jobs/${queued.id}/events`, { headers: { Authorization: `Bearer ${token}` } });
+    const queued = await api<JobRecord>("/jobs", {
+      profile: "default",
+      level: "semantic",
+      priority: "foreground",
+    });
+    const events = await fetch(`${base}/v1/jobs/${queued.id}/events`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
     expect(events.headers.get("content-type")).toContain("text/event-stream");
     const progress = await events.text();
     expect(progress).toContain('"status":"succeeded"');
@@ -355,7 +409,9 @@ test("real capture, HTTP, source graph, observations, edit and restart", async (
     ).toBeTruthy();
     await stop();
     await start();
-    expect((await api<JobRecord>(`/jobs/${queued.id}`)).status).toBe("succeeded");
+    expect((await api<JobRecord>(`/jobs/${queued.id}`)).status).toBe(
+      "succeeded",
+    );
     const restartedSource = await api<SourceWindow>(
       `/source/${encodeURIComponent(entry.file_id)}?${pin(before)}`,
     );

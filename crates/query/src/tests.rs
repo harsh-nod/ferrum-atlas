@@ -95,6 +95,70 @@ fn engine(count: usize) -> (tempfile::TempDir, QueryEngine, Snapshot) {
     (temp, QueryEngine::new(store).unwrap(), snapshot)
 }
 
+#[test]
+fn bookmark_retention_is_idempotent_authorized_and_snapshot_scoped() {
+    let (temp, engine, first) = engine(3);
+    let store = Store::open(temp.path()).unwrap();
+    let mut changed = batch(4);
+    changed.source.revision = "two".into();
+    changed.source.id = SourceId("source:second".into());
+    let second = store.publish(&changed, "main", Some(&first.id)).unwrap();
+    let request = SnapshotPinRequest {
+        context_id: first.context.id.clone(),
+        name: "browser-bookmark".into(),
+    };
+    assert!(
+        engine
+            .set_snapshot_pin(&first.id, &request, true)
+            .unwrap()
+            .retained
+    );
+    engine.set_snapshot_pin(&first.id, &request, true).unwrap();
+    engine.set_snapshot_pin(&second.id, &request, true).unwrap();
+    assert_eq!(store.pins().unwrap().len(), 2);
+    assert!(
+        !engine
+            .set_snapshot_pin(&second.id, &request, false)
+            .unwrap()
+            .retained
+    );
+    assert_eq!(store.pins().unwrap()[0].snapshot_id, first.id);
+    let denied = engine.clone().with_repositories([]);
+    assert_eq!(
+        denied
+            .set_snapshot_pin(&first.id, &request, false)
+            .unwrap_err()
+            .code(),
+        "not_authorized"
+    );
+    let wrong = SnapshotPinRequest {
+        context_id: ContextId("wrong".into()),
+        ..request.clone()
+    };
+    assert_eq!(
+        engine
+            .set_snapshot_pin(&first.id, &wrong, false)
+            .unwrap_err()
+            .code(),
+        "context_mismatch"
+    );
+    let malformed = SnapshotPinRequest {
+        name: "../global".into(),
+        ..request.clone()
+    };
+    assert_eq!(
+        engine
+            .set_snapshot_pin(&first.id, &malformed, true)
+            .unwrap_err()
+            .code(),
+        "invalid_query"
+    );
+    assert_eq!(store.pins().unwrap().len(), 1);
+    engine.set_snapshot_pin(&first.id, &request, false).unwrap();
+    engine.set_snapshot_pin(&first.id, &request, false).unwrap();
+    assert!(store.pins().unwrap().is_empty());
+}
+
 fn graph(snapshot: &Snapshot) -> GraphRequest {
     GraphRequest {
         snapshot_id: snapshot.id.clone(),
