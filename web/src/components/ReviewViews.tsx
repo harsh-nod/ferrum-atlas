@@ -15,6 +15,8 @@ import { params, request } from "../api/client";
 import { useResource } from "../state";
 import { CoverageNotice, ErrorNotice, Loading } from "./common";
 import { SourcePane } from "./SourcePane";
+import { JobsView } from "./JobsView";
+import { TraceCompareView } from "./TraceCompareView";
 
 export function EvidenceList({ evidence }: { evidence: Evidence[] }) {
   return (
@@ -73,12 +75,14 @@ export function EvidenceList({ evidence }: { evidence: Evidence[] }) {
 export function EvidenceView({
   evidence,
   snapshot,
+  snapshots,
   loading = false,
   error,
   selected: evidenceSelected = true,
 }: {
   evidence: Evidence[];
   snapshot: Snapshot;
+  snapshots: Snapshot[];
   loading?: boolean;
   error?: Error;
   selected?: boolean;
@@ -120,6 +124,7 @@ export function EvidenceView({
         <ShieldCheck size={20} />
         <h2>Evidence</h2>
       </div>
+      <TraceCompareView snapshot={snapshot} snapshots={snapshots} />
       {loading && <Loading label="Loading provenance" />}
       <ErrorNotice error={error} />
       {!loading && !error && evidenceSelected && (
@@ -475,6 +480,7 @@ export function HealthView({
         <ShieldCheck size={20} />
         <h2>Index Health</h2>
       </div>
+      <JobsView snapshot={snapshot} />
       <div className="stat-strip">
         <div>
           <strong>{snapshot.file_count.toLocaleString()}</strong>

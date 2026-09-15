@@ -6,6 +6,7 @@ import {
   ArrowRight,
   Bookmark as BookmarkIcon,
   Check,
+  ChartNoAxesCombined,
   ChevronRight,
   Code2,
   Download,
@@ -53,6 +54,7 @@ import {
 } from "./components/common";
 import { SourcePane } from "./components/SourcePane";
 import { GraphPane } from "./components/GraphPane";
+import { AnalysisView } from "./components/AnalysisViews";
 import {
   ChangesView,
   EvidenceList,
@@ -64,6 +66,7 @@ import {
 const tabIcons = {
   explore: Network,
   flow: Workflow,
+  analysis: ChartNoAxesCombined,
   changes: GitCompareArrows,
   evidence: ShieldCheck,
   health: Activity,
@@ -793,9 +796,23 @@ export function App() {
             {location.view === "changes" && (
               <ChangesView snapshots={snapshots} current={snapshot} />
             )}
+            {location.view === "analysis" && (
+              <AnalysisView
+                snapshot={snapshot}
+                definition={definition.data?.definition}
+                graph={graph.data}
+                direction={direction}
+                depth={depth}
+                onSelect={(id) =>
+                  navigate({ definition: id, edge: "", view: "explore" })
+                }
+              />
+            )}
             {location.view === "evidence" && (
               <EvidenceView
+                key={snapshot.id}
                 snapshot={snapshot}
+                snapshots={snapshots}
                 evidence={evidence}
                 loading={evidenceLoading}
                 error={evidenceError}

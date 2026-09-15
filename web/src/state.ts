@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 export const views = [
   "explore",
   "flow",
+  "analysis",
   "changes",
   "evidence",
   "health",
