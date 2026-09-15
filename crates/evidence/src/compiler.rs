@@ -1,10 +1,11 @@
 //! Import compiler records without executing a toolchain or analyzed source.
-use super::ScopedDirectory;
+use super::{ScopedDirectory, evidence_checkpoint};
 use anyhow::{Context, Result, ensure};
 use atlas_model::*;
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
+    io::{self, Write},
     path::{Component, Path, PathBuf},
 };
 
@@ -541,14 +542,64 @@ pub fn import(
     Ok(summary(&id, &imported))
 }
 fn read_from(folder: &ScopedDirectory, name: &Path) -> Result<CompilerImport> {
-    let value: CompilerImport =
-        serde_json::from_slice(&folder.read(name, MAX_BYTES + 1024 * 1024)?)?;
-    let id = digest("compiler-import", &value);
+    read_from_with_stop(folder, name, &|| false)
+}
+fn read_from_with_stop(
+    folder: &ScopedDirectory,
+    name: &Path,
+    stopped: &dyn Fn() -> bool,
+) -> Result<CompilerImport> {
+    evidence_checkpoint(stopped)?;
+    let bytes = folder.read_with_stop(name, MAX_BYTES + 1024 * 1024, stopped)?;
+    evidence_checkpoint(stopped)?;
+    let parsed = serde_json::from_slice(&bytes);
+    evidence_checkpoint(stopped)?;
+    let value: CompilerImport = parsed?;
+    let id = import_identity_with_stop(&value, stopped)?;
     ensure!(
         name.file_stem().and_then(|s| s.to_str()) == id.split_once(':').map(|(_, id)| id),
         "compiler object checksum mismatch"
     );
+    evidence_checkpoint(stopped)?;
     Ok(value)
+}
+
+// Preserve the model's canonical identity without allocating another whole object.
+fn import_identity_with_stop(value: &CompilerImport, stopped: &dyn Fn() -> bool) -> Result<String> {
+    struct HashWriter<'a> {
+        hash: Sha256,
+        remaining: u64,
+        stopped: &'a dyn Fn() -> bool,
+    }
+    impl Write for HashWriter<'_> {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            for chunk in bytes.chunks(64 * 1024) {
+                evidence_checkpoint(self.stopped).map_err(io::Error::other)?;
+                if chunk.len() as u64 > self.remaining {
+                    return Err(io::Error::other("compiler identity exceeds byte budget"));
+                }
+                self.hash.update(chunk);
+                self.remaining -= chunk.len() as u64;
+            }
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    evidence_checkpoint(stopped)?;
+    let mut writer = HashWriter {
+        hash: Sha256::new(),
+        remaining: MAX_BYTES + 1024 * 1024,
+        stopped,
+    };
+    writer.hash.update(b"ferrum-atlas:1\0compiler-import\0");
+    let serialized = serde_json::to_writer(&mut writer, value);
+    evidence_checkpoint(stopped)?;
+    serialized?;
+    let id = format!("compiler-import:{:x}", writer.hash.finalize());
+    evidence_checkpoint(stopped)?;
+    Ok(id)
 }
 #[cfg(test)]
 fn read(path: &Path) -> Result<CompilerImport> {
@@ -583,21 +634,41 @@ pub fn list(
     snapshot: &SnapshotId,
     context: &ContextId,
 ) -> Result<Vec<CompilerImportSummary>> {
-    let Some(directory) = ScopedDirectory::open(&folder(root, snapshot), false)? else {
+    list_with_stop(root, snapshot, context, &|| false)
+}
+pub fn list_with_stop(
+    root: &Path,
+    snapshot: &SnapshotId,
+    context: &ContextId,
+    stopped: &dyn Fn() -> bool,
+) -> Result<Vec<CompilerImportSummary>> {
+    evidence_checkpoint(stopped)?;
+    let directory = ScopedDirectory::open(&folder(root, snapshot), false)?;
+    evidence_checkpoint(stopped)?;
+    let Some(directory) = directory else {
         return Ok(vec![]);
     };
-    directory
-        .json_names(16)?
-        .into_iter()
-        .map(|path| {
-            let imported = read_from(&directory, &path)?;
-            ensure!(
-                &imported.snapshot_id == snapshot && &imported.context_id == context,
-                "compiler scope mismatch"
-            );
-            Ok(summary(&digest("compiler-import", &imported), &imported))
-        })
-        .collect()
+    let mut summaries = vec![];
+    for path in directory.json_names_with_stop(16, stopped)? {
+        evidence_checkpoint(stopped)?;
+        let imported = read_from_with_stop(&directory, &path, stopped)?;
+        ensure!(
+            &imported.snapshot_id == snapshot && &imported.context_id == context,
+            "compiler scope mismatch"
+        );
+        // The reader has already verified this filename against the canonical hash.
+        let id = format!(
+            "compiler-import:{}",
+            path.file_stem()
+                .and_then(|name| name.to_str())
+                .context("invalid compiler object name")?
+        );
+        evidence_checkpoint(stopped)?;
+        summaries.push(summary(&id, &imported));
+        evidence_checkpoint(stopped)?;
+    }
+    evidence_checkpoint(stopped)?;
+    Ok(summaries)
 }
 pub fn flow(
     root: &Path,
@@ -607,6 +678,26 @@ pub fn flow(
     import_id: &str,
     window: (u32, u32),
 ) -> Result<CompilerFlowPage> {
+    flow_with_stop(
+        root,
+        snapshot,
+        context,
+        definition,
+        import_id,
+        window,
+        &|| false,
+    )
+}
+pub fn flow_with_stop(
+    root: &Path,
+    snapshot: &SnapshotId,
+    context: &ContextId,
+    definition: &DefinitionId,
+    import_id: &str,
+    window: (u32, u32),
+    stopped: &dyn Fn() -> bool,
+) -> Result<CompilerFlowPage> {
+    evidence_checkpoint(stopped)?;
     let (offset, limit) = window;
     ensure!(
         (1..=200).contains(&limit),
@@ -621,31 +712,51 @@ pub fn flow(
     );
     let directory = ScopedDirectory::open(&folder(root, snapshot), false)?
         .context("compiler scope unavailable")?;
-    let imported = read_from(&directory, Path::new(&format!("{suffix}.json")))?;
+    evidence_checkpoint(stopped)?;
+    let imported = read_from_with_stop(&directory, Path::new(&format!("{suffix}.json")), stopped)?;
     ensure!(
         &imported.snapshot_id == snapshot && &imported.context_id == context,
         "compiler scope mismatch"
     );
-    let matched: Vec<_> = imported.mappings.iter().filter(|mapping| matches!(&mapping.mapping, CompilerDefinitionMapping::Matched { definition_id } if definition_id == definition)).collect();
-    ensure!(
-        matched.len() == 1,
-        "no unique compiler body for this definition"
-    );
-    let mut body = imported
-        .bundle
-        .bodies
-        .iter()
-        .find(|body| body.body_id == matched[0].body_id)
-        .context("compiler body unavailable")?
-        .clone();
+    let mut matched = None;
+    for mapping in &imported.mappings {
+        evidence_checkpoint(stopped)?;
+        if matches!(&mapping.mapping, CompilerDefinitionMapping::Matched { definition_id } if definition_id == definition)
+        {
+            ensure!(
+                matched.is_none(),
+                "no unique compiler body for this definition"
+            );
+            matched = Some(&mapping.body_id);
+        }
+    }
+    let matched = matched.context("no unique compiler body for this definition")?;
+    let mut selected = None;
+    for body in imported.bundle.bodies {
+        evidence_checkpoint(stopped)?;
+        if &body.body_id == matched {
+            selected = Some(body);
+            break;
+        }
+    }
+    let mut body = selected.context("compiler body unavailable")?;
+    evidence_checkpoint(stopped)?;
     let total_blocks = body.blocks.len() as u32;
     ensure!(
         offset < total_blocks,
         "compiler block offset is outside body"
     );
     let end = offset.saturating_add(limit).min(total_blocks);
-    body.blocks = body.blocks[offset as usize..end as usize].to_vec();
-    Ok(CompilerFlowPage {
+    let mut blocks = Vec::with_capacity((end - offset) as usize);
+    for (index, block) in body.blocks.into_iter().enumerate() {
+        evidence_checkpoint(stopped)?;
+        if index >= offset as usize && index < end as usize {
+            blocks.push(block);
+        }
+    }
+    body.blocks = blocks;
+    evidence_checkpoint(stopped)?;
+    let page = CompilerFlowPage {
         snapshot_id: snapshot.clone(),
         context_id: context.clone(),
         import_id: import_id.into(),
@@ -659,7 +770,9 @@ pub fn flow(
         total_blocks,
         next_offset: (end < total_blocks).then_some(end),
         coverage: imported.coverage,
-    })
+    };
+    evidence_checkpoint(stopped)?;
+    Ok(page)
 }
 
 #[cfg(test)]
@@ -669,5 +782,9 @@ mod tests {
     mod io {
         use super::*;
         include!("compiler/io_tests.rs");
+    }
+    mod cancellation {
+        use super::*;
+        include!("compiler/cancellation_tests.rs");
     }
 }
