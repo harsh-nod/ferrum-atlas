@@ -555,6 +555,7 @@ fn read_from_with_stop(
     let parsed = serde_json::from_slice(&bytes);
     evidence_checkpoint(stopped)?;
     let value: CompilerImport = parsed?;
+    drop(bytes);
     let id = import_identity_with_stop(&value, stopped)?;
     ensure!(
         name.file_stem().and_then(|s| s.to_str()) == id.split_once(':').map(|(_, id)| id),
