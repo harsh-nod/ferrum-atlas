@@ -62,15 +62,18 @@ fn extract(
             "analysis file byte budget exceeded"
         );
         let syntax = sema.parse_guess_edition(RaFileId::from_raw(index as u32));
-        let crate_roots = sema
+        let modules = sema
             .file_to_module_defs(RaFileId::from_raw(index as u32))
+            .collect::<Vec<_>>();
+        let ambiguous_crate = modules.len() > 1;
+        let crate_roots = modules
+            .into_iter()
             .map(|module| {
                 source.files[module.krate(db).root_file(db).index() as usize]
                     .path
                     .clone()
             })
             .collect::<BTreeSet<_>>();
-        let ambiguous_crate = crate_roots.len() > 1;
         let configuration = if crate_roots.len() == 1 {
             crate_roots.into_iter().next().unwrap()
         } else {
@@ -80,7 +83,7 @@ fn extract(
             add_gap(
                 &mut coverage,
                 UnknownReason::CfgUnknown,
-                "A source file belongs to multiple crate instances; instance-specific definitions and calls remain unknown.",
+                "A source file belongs to multiple crate instances or module instances; instance-specific definitions and calls remain unknown.",
             );
         }
         let settings = configurations
@@ -102,7 +105,10 @@ fn extract(
             });
         }
         // The parse API reports missing tokens separately from ERROR nodes.
-        let parsed = ra_ap_syntax::SourceFile::parse(&file.text, ra_ap_syntax::Edition::CURRENT);
+        let edition = sema
+            .attach_first_edition(RaFileId::from_raw(index as u32))
+            .edition(db);
+        let parsed = ra_ap_syntax::SourceFile::parse(&file.text, edition);
         for error in parsed.errors() {
             diagnostics.push(Diagnostic {
                 path: Some(file.path.clone()),

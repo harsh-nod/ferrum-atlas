@@ -42,18 +42,17 @@ impl Configurations {
         // Local feature closure is supported. Dependency feature unification and forwarding
         // require Cargo's resolver, so affected predicates remain unknown.
         let dependency_overrides = manifests.values().any(|manifest| {
-            manifest
-                .get("dependencies")
-                .and_then(toml::Value::as_table)
-                .is_some_and(|deps| {
-                    deps.values().any(|dep| {
-                        dep.get("features").is_some()
-                            || dep.get("default-features").and_then(toml::Value::as_bool)
-                                == Some(false)
-                    })
-                })
+            has_dependency_overrides(manifest)
+                || manifest
+                    .get("workspace")
+                    .is_some_and(has_dependency_overrides)
+                || manifest.get("target").is_some()
         });
-        let mut unresolved_forwarding = dependency_overrides;
+        let virtual_workspace_selection = manifests
+            .get("Cargo.toml")
+            .is_some_and(|manifest| manifest.get("package").is_none())
+            && (!context.features.is_empty() || !context.default_features);
+        let mut unresolved_forwarding = dependency_overrides || virtual_workspace_selection;
         for krate in &context.crates {
             let owner = Path::new(&krate.root_file)
                 .ancestors()
@@ -103,6 +102,9 @@ impl Configurations {
                     }
                 }
             }
+            if let Some(Some(feature)) = context.cfg.get("feature") {
+                settings.features.insert(feature.clone());
+            }
             unresolved_forwarding |= settings.unknown_features;
             roots.insert(krate.root_file.clone(), settings);
         }
@@ -113,6 +115,18 @@ impl Configurations {
         }
         Ok(Self { roots, fallback })
     }
+}
+
+fn has_dependency_overrides(manifest: &toml::Value) -> bool {
+    manifest
+        .get("dependencies")
+        .and_then(toml::Value::as_table)
+        .is_some_and(|deps| {
+            deps.values().any(|dep| {
+                dep.get("features").is_some()
+                    || dep.get("default-features").and_then(toml::Value::as_bool) == Some(false)
+            })
+        })
 }
 
 impl Settings {

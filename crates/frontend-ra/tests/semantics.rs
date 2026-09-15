@@ -477,3 +477,104 @@ fn rejects_oversized_or_ambiguous_source_inputs_before_database_loading() {
             .contains("byte budget")
     );
 }
+
+#[test]
+fn workspace_dependency_overrides_and_virtual_feature_selection_stay_unknown() {
+    let dir = project(&[
+        (
+            "Cargo.toml",
+            "[workspace]\nmembers=['member','helper']\n[workspace.dependencies]\nhelper={path='helper',default-features=false}\n",
+        ),
+        (
+            "member/Cargo.toml",
+            "[package]\nname='member'\nversion='0.1.0'\nedition='2021'\n[dependencies]\nhelper.workspace=true\n[features]\nfast=[]\n",
+        ),
+        (
+            "member/src/lib.rs",
+            "pub fn entry() { helper::selected(); } #[cfg(feature=\"fast\")] fn enabled() {}",
+        ),
+        (
+            "helper/Cargo.toml",
+            "[package]\nname='helper'\nversion='0.1.0'\nedition='2021'\n[features]\ndefault=['fast']\nfast=[]\n",
+        ),
+        (
+            "helper/src/lib.rs",
+            "#[cfg(feature=\"fast\")] pub fn selected() {} #[cfg(not(feature=\"fast\"))] pub fn selected() {}",
+        ),
+    ]);
+    let first = facts(&dir, AnalysisLevel::Semantic);
+    assert!(targets(&first, "entry").is_empty());
+    assert!(
+        first
+            .definitions
+            .iter()
+            .filter(|item| item.name == "selected")
+            .all(|item| item.cfg_status == CfgStatus::Unknown)
+    );
+    fs::write(dir.path().join("Cargo.toml"), "[workspace]\nmembers=['member','helper']\n[workspace.dependencies]\nhelper={path='helper'}\n").unwrap();
+    let options = CaptureOptions {
+        features: vec!["member/fast".into()],
+        ..Default::default()
+    };
+    let (source, context) = capture(dir.path(), &options).unwrap();
+    let second = analyze(source, context, AnalysisLevel::Semantic).unwrap();
+    assert_eq!(
+        definition(&second, "enabled").cfg_status,
+        CfgStatus::Unknown
+    );
+}
+
+#[test]
+fn explicit_feature_cfg_matches_the_semantic_database() {
+    let dir = project(&[(
+        "src/lib.rs",
+        "#[cfg(feature=\"custom\")] fn selected() {} #[cfg(not(feature=\"custom\"))] fn selected() {} fn entry() { selected(); }",
+    )]);
+    let options = CaptureOptions {
+        cfg: std::collections::BTreeMap::from([("feature".into(), Some("custom".into()))]),
+        ..Default::default()
+    };
+    let (source, context) = capture(dir.path(), &options).unwrap();
+    let facts = analyze(source, context, AnalysisLevel::Semantic).unwrap();
+    let selected = facts
+        .definitions
+        .iter()
+        .find(|item| item.name == "selected" && item.cfg_status == CfgStatus::Active)
+        .unwrap();
+    assert!(selected.cfg[0].contains("#[cfg(feature="));
+    assert!(
+        facts
+            .relations
+            .iter()
+            .any(|edge| matches!(&edge.target, Target::Resolved { id } if id == &selected.id))
+    );
+}
+
+#[test]
+fn shared_source_in_distinct_module_instances_is_not_conflated() {
+    let dir = project(&[
+        (
+            "src/lib.rs",
+            "#[path=\"common.rs\"] mod left; #[path=\"common.rs\"] mod right; fn target() {} fn entry() { left::call(); right::call(); }",
+        ),
+        ("src/common.rs", "pub fn call() { super::target(); }"),
+    ]);
+    let facts = facts(&dir, AnalysisLevel::Semantic);
+    assert_eq!(definition(&facts, "call").cfg_status, CfgStatus::Active);
+    assert!(targets(&facts, "call").is_empty());
+    assert!(targets(&facts, "entry").is_empty());
+}
+
+#[test]
+fn syntax_diagnostics_respect_the_crate_edition() {
+    let dir = project(&[
+        (
+            "Cargo.toml",
+            "[package]\nname='legacy'\nversion='0.1.0'\nedition='2015'\n",
+        ),
+        ("src/lib.rs", "fn async() {} fn entry() { async(); }"),
+    ]);
+    let facts = facts(&dir, AnalysisLevel::Semantic);
+    assert!(facts.diagnostics.is_empty(), "{:?}", facts.diagnostics);
+    assert_eq!(targets(&facts, "entry"), vec!["src::lib::async"]);
+}
