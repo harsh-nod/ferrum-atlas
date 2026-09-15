@@ -26,7 +26,7 @@ certification. No dependency versions were changed during this check.
 
 | Input | SHA-256 |
 | --- | --- |
-| `Cargo.lock` | `90399e57bf03db59b99e2978d6a8b77fb3e1e97a611a5c169eef02a7ffe3f734` |
+| `Cargo.lock` | `45bbad062da93ba50cc96386c8b995f0faa50e946fcfe6d37b374ff6ae7077d7` |
 | `adapters/rustc/Cargo.lock` | `370c0d99c47df66ec4c38cf2ad095457b03b8335c8223253ff45e201aacd5533` |
 | `web/package-lock.json` | `9f33697eaada45a9c4e9b65ba01a3ab1e714d35eafe2ce8831ae3fd12b4a9b66` |
 
@@ -50,6 +50,7 @@ packages, including development tooling such as `xtask`.
 | `ra_ap_hir` | `0.0.349` | MIT OR Apache-2.0 |
 | `ra_ap_ide_db` | `0.0.349` | MIT OR Apache-2.0 |
 | `ra_ap_intern` | `0.0.349` | MIT OR Apache-2.0 |
+| `ra_ap_parser` | `0.0.349` | MIT OR Apache-2.0 |
 | `ra_ap_span` | `0.0.349` | MIT OR Apache-2.0 |
 | `ra_ap_syntax` | `0.0.349` | MIT OR Apache-2.0 |
 | `ra_ap_vfs` | `0.0.349` | MIT OR Apache-2.0 |
@@ -99,6 +100,13 @@ Before publishing compiled binaries or viewer bundles, review the actual
 distribution's licenses, notices, bundled native components, and applicable
 source-availability requirements. This metadata inventory is not a complete
 third-party notice bundle or a determination of license compatibility.
+
+The packaging workflow now collects actual dependency notice files and pinned
+supplements. Its inventory is distinct from this declared-license summary.
+[Installation and distribution gates](operations/install.md) explicitly retain
+the unpassed ELK preferred-source/source-availability and Rust sysroot-linked
+notice reviews. The [downloaded package check](milestones/package-verification.md)
+establishes runtime/shape checks, not licensing approval.
 
 ## Advisory Scan Results
 

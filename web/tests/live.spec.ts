@@ -16,6 +16,8 @@ import type {
   ObservationWindow,
   JobRecord,
   StateTransitionReview,
+  AnalysisResponse,
+  CompilerComplexity,
 } from "../src/api/types";
 
 test("real capture, HTTP, source graph, observations, edit and restart", async ({
@@ -336,12 +338,62 @@ test("real capture, HTTP, source graph, observations, edit and restart", async (
       await expect(page.locator(".dataflow-table")).toContainText(
         "Unknown memory effects",
       );
+      await page
+        .getByRole("button", { name: /^Show source for use/ })
+        .first()
+        .click();
+      await expect(page.locator(".cm-editor")).toBeVisible();
+      const complexityPath = `/compiler/bodies/${encodeURIComponent(entry.id)}/complexity?${pin(before)}&import_id=${encodeURIComponent(compilerImport.id)}`;
+      const complexity =
+        await api<AnalysisResponse<CompilerComplexity>>(complexityPath);
+      expect(complexity.analysis.definition_id).toBe(entry.id);
+      expect(complexity.analysis.import_id).toBe(compilerImport.id);
+      expect(complexity.analysis.metrics?.cyclomatic).toBeGreaterThanOrEqual(1);
+      expect(
+        (
+          await fetch(
+            base +
+              "/v1" +
+              complexityPath.replace(
+                encodeURIComponent(before.context.id),
+                "context%3Awrong",
+              ),
+            { headers: { Authorization: `Bearer ${token}` } },
+          )
+        ).status,
+      ).toBe(409);
+      await page
+        .getByRole("button", { name: "Measure CFG", exact: true })
+        .click();
+      await expect(
+        page
+          .getByRole("region", { name: "Compiler CFG complexity" })
+          .getByText("Cyclomatic", { exact: true }),
+      ).toBeVisible();
       await page.screenshot({
         path: testInfo.outputPath("live-compiler-flow.png"),
         fullPage: true,
       });
       await page.getByRole("button", { name: "Explore", exact: true }).click();
     }
+
+    await page.getByRole("button", { name: "Analysis", exact: true }).click();
+    const metricsPanel = page.getByRole("region", {
+      name: "Source maintainability",
+    });
+    await metricsPanel
+      .getByRole("button", { name: "Measure source", exact: true })
+      .click();
+    await expect(metricsPanel.locator("dd").first()).toHaveText("1");
+    await expect(
+      metricsPanel.getByText(
+        "Counts withheld: source traversal is incomplete.",
+      ),
+    ).toHaveCount(0);
+    await metricsPanel.getByLabel("Source locations").selectOption("lines");
+    await metricsPanel.getByRole("button", { name: /Code line 1/ }).click();
+    await expect(page).toHaveURL(/view=explore/);
+    await expect(page.locator(".cm-content")).toContainText("pub fn entry");
 
     await page.goto(
       `${base}/?snapshot=${encodeURIComponent(before.id)}&context=${encodeURIComponent(before.context.id)}&definition=${encodeURIComponent(stateEvent.id)}&view=flow`,

@@ -1810,6 +1810,56 @@ code,
 .state-machine-view {
   border-top: 1px solid #d8dfe5;
 }
+.maintainability-counts {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+  margin: 20px 0;
+}
+.maintainability-counts dt {
+  color: #586875;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.maintainability-counts dd {
+  font-size: 20px;
+  margin: 6px 0 0;
+}
+.maintainability-kind {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
+.maintainability-kind select {
+  max-width: 100%;
+}
+.maintainability-sites {
+  list-style: none;
+  margin: 8px 0;
+  padding: 0;
+}
+.maintainability-sites li {
+  padding: 6px 0;
+  border-bottom: 1px solid #e4e9ed;
+}
+.maintainability-sites button {
+  max-width: 100%;
+  flex-wrap: wrap;
+  text-align: left;
+}
+.maintainability-paging {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+@media (max-width: 600px) {
+  .maintainability-counts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
 .state-machine-view h3 {
   font-size: 14px;
   margin: 0 0 12px;

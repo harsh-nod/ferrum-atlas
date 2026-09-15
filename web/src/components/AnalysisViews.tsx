@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { ChartNoAxesCombined, FileCode2, Route } from "lucide-react";
 import type {
-  AnalysisEnvelope,
   AnalysisResponse,
   Definition,
   Direction,
@@ -11,38 +10,14 @@ import type {
   PathAnalysis,
   PathRequest,
   Snapshot,
+  Span,
 } from "../api/types";
 import { request } from "../api/client";
 import { useResource } from "../state";
-import { CoverageNotice, ErrorNotice, Loading } from "./common";
-
-export function AnalysisNotes({ envelope }: { envelope: AnalysisEnvelope }) {
-  return (
-    <>
-      <CoverageNotice coverage={envelope.coverage} />
-      {(envelope.truncated ||
-        envelope.cancelled ||
-        envelope.deadline_reached) && (
-        <p className="notice" role="status">
-          {envelope.cancelled
-            ? "Cancelled"
-            : envelope.deadline_reached
-              ? "Deadline reached"
-              : "Bounded result"}
-        </p>
-      )}
-      <details className="analysis-assumptions">
-        <summary>Algorithm and assumptions</summary>
-        <p className="mono">{envelope.algorithm_version}</p>
-        <ul>
-          {envelope.assumptions.map((assumption, index) => (
-            <li key={index}>{assumption}</li>
-          ))}
-        </ul>
-      </details>
-    </>
-  );
-}
+import { ErrorNotice, Loading } from "./common";
+import { MaintainabilityView } from "./MaintainabilityView";
+import { AnalysisNotes } from "./AnalysisNotes";
+export { AnalysisNotes } from "./AnalysisNotes";
 
 export function AnalysisView({
   snapshot,
@@ -51,6 +26,7 @@ export function AnalysisView({
   direction,
   depth,
   onSelect,
+  onSpan,
 }: {
   snapshot: Snapshot;
   definition?: Definition;
@@ -58,6 +34,7 @@ export function AnalysisView({
   direction: Direction;
   depth: number;
   onSelect: (id: string) => void;
+  onSpan: (span: Span) => void;
 }) {
   const [target, setTarget] = useState("");
   const [pathRequest, setPathRequest] = useState<PathRequest | null>(null);
@@ -108,6 +85,20 @@ export function AnalysisView({
         <h2>Selected Graph Analysis</h2>
       </div>
       {!definition && <p className="muted">No definition selected.</p>}
+      {definition &&
+        definition.body_span &&
+        ["function", "method"].includes(definition.kind) && (
+          <MaintainabilityView
+            key={JSON.stringify([
+              snapshot.id,
+              snapshot.context.id,
+              definition.id,
+            ])}
+            snapshot={snapshot}
+            definition={definition}
+            onSpan={onSpan}
+          />
+        )}
       <ErrorNotice error={analysis.error} />
       {analysis.loading && <Loading label="Analyzing selected call graph" />}
       {analysis.data && (

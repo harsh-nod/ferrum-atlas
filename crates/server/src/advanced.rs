@@ -47,9 +47,20 @@ pub(super) async fn compiler_imports(
     Query(pin): Query<Pinned>,
 ) -> Result<Json<Vec<CompilerImportSummary>>, HttpError> {
     let root = state.compiler_dir.clone();
+    let guard = AnalysisGuard {
+        query: QueryControl::new(Duration::from_millis(250)),
+        analysis: AnalysisControl::new(Duration::from_secs(2)),
+    };
+    let control = guard.analysis.clone();
     perform(state, move |q| {
         check_observation_scope(&q, &pin.snapshot_id, &pin.context_id)?;
-        atlas_evidence::compiler::list(&root, &pin.snapshot_id, &pin.context_id).map_err(|_| {
+        atlas_evidence::compiler::list_with_stop(&root, &pin.snapshot_id, &pin.context_id, &|| {
+            control.stopped()
+        })
+        .map_err(|_| {
+            if control.stopped() {
+                return compiler_load_cancelled();
+            }
             HttpError::new(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "unavailable_evidence",
@@ -74,18 +85,27 @@ pub(super) async fn compiler_flow(
     Query(params): Query<CompilerWindowParams>,
 ) -> Result<Json<CompilerFlowPage>, HttpError> {
     let root = state.compiler_dir.clone();
+    let guard = AnalysisGuard {
+        query: QueryControl::new(Duration::from_millis(250)),
+        analysis: AnalysisControl::new(Duration::from_secs(2)),
+    };
+    let control = guard.analysis.clone();
     perform(state, move |q| {
         let definition = DefinitionId(id);
         q.definition(&params.snapshot_id, &params.context_id, &definition)?;
-        atlas_evidence::compiler::flow(
+        atlas_evidence::compiler::flow_with_stop(
             &root,
             &params.snapshot_id,
             &params.context_id,
             &definition,
             &params.import_id,
             (params.offset.unwrap_or(0), params.limit.unwrap_or(200)),
+            &|| control.stopped(),
         )
         .map_err(|_| {
+            if control.stopped() {
+                return compiler_load_cancelled();
+            }
             HttpError::new(
                 StatusCode::NOT_FOUND,
                 "unavailable_evidence",
@@ -104,6 +124,57 @@ pub(super) struct DataflowParams {
     import_id: String,
 }
 
+fn complete_compiler_body(
+    q: &QueryEngine,
+    root: &std::path::Path,
+    definition: &DefinitionId,
+    params: &DataflowParams,
+    control: &AnalysisControl,
+) -> Result<CompilerFlowPage, HttpError> {
+    if control.stopped() {
+        return Err(compiler_load_cancelled());
+    }
+    q.definition(&params.snapshot_id, &params.context_id, definition)?;
+    let page = atlas_evidence::compiler::flow_with_stop(
+        root,
+        &params.snapshot_id,
+        &params.context_id,
+        definition,
+        &params.import_id,
+        (0, 200),
+        &|| control.stopped(),
+    )
+    .map_err(|_| {
+        if control.stopped() {
+            return compiler_load_cancelled();
+        }
+        HttpError::new(
+            StatusCode::NOT_FOUND,
+            "unavailable_evidence",
+            "No compatible complete compiler body is available",
+        )
+    })?;
+    if control.stopped() {
+        return Err(compiler_load_cancelled());
+    }
+    if page.next_offset.is_some() {
+        return Err(HttpError::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "budget_exhausted",
+            "Selected compiler analysis is limited to complete bodies of at most 200 blocks",
+        ));
+    }
+    Ok(page)
+}
+
+fn compiler_load_cancelled() -> HttpError {
+    HttpError::new(
+        StatusCode::REQUEST_TIMEOUT,
+        "budget_exhausted",
+        "Compiler evidence loading was cancelled or reached its deadline",
+    )
+}
+
 pub(super) async fn compiler_dataflow(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -117,29 +188,7 @@ pub(super) async fn compiler_dataflow(
     let control = guard.analysis.clone();
     perform(state, move |q| {
         let definition = DefinitionId(id);
-        q.definition(&params.snapshot_id, &params.context_id, &definition)?;
-        let page = atlas_evidence::compiler::flow(
-            &root,
-            &params.snapshot_id,
-            &params.context_id,
-            &definition,
-            &params.import_id,
-            (0, 200),
-        )
-        .map_err(|_| {
-            HttpError::new(
-                StatusCode::NOT_FOUND,
-                "unavailable_evidence",
-                "No compatible complete compiler body is available",
-            )
-        })?;
-        if page.next_offset.is_some() {
-            return Err(HttpError::new(
-                StatusCode::PAYLOAD_TOO_LARGE,
-                "budget_exhausted",
-                "Selected dataflow is limited to complete bodies of at most 200 blocks",
-            ));
-        }
+        let page = complete_compiler_body(&q, &root, &definition, &params, &control)?;
         let analysis = atlas_analysis::reaching_definitions(
             &page.body,
             &page.coverage,
@@ -147,6 +196,35 @@ pub(super) async fn compiler_dataflow(
                 max_blocks: 200,
                 ..Default::default()
             },
+            &control,
+        )
+        .map_err(analysis_error)?;
+        Ok(AnalysisResponse {
+            api_version: API_VERSION.into(),
+            snapshot_id: params.snapshot_id,
+            context_id: params.context_id,
+            analysis,
+        })
+    })
+    .await
+}
+
+pub(super) async fn compiler_complexity(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(params): Query<DataflowParams>,
+) -> Result<Json<AnalysisResponse<atlas_analysis::CompilerComplexity>>, HttpError> {
+    let root = state.compiler_dir.clone();
+    let guard = AnalysisGuard {
+        query: QueryControl::new(Duration::from_millis(250)),
+        analysis: AnalysisControl::new(Duration::from_secs(2)),
+    };
+    let control = guard.analysis.clone();
+    perform(state, move |q| {
+        let page = complete_compiler_body(&q, &root, &DefinitionId(id), &params, &control)?;
+        let analysis = atlas_analysis::analyze_compiler_complexity(
+            &page,
+            atlas_analysis::CompilerComplexityLimits::default(),
             &control,
         )
         .map_err(analysis_error)?;
@@ -327,4 +405,36 @@ pub(super) async fn trace_compare(
         })
     })
     .await
+}
+
+#[cfg(test)]
+mod compiler_load_tests {
+    use super::*;
+
+    #[test]
+    fn stopped_compiler_load_is_budget_exhaustion_before_definition_or_file_lookup() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = atlas_store::Store::open(temp.path().join("store")).unwrap();
+        let query = QueryEngine::new(store).unwrap();
+        let params = DataflowParams {
+            snapshot_id: SnapshotId("snapshot:missing".into()),
+            context_id: ContextId("context:missing".into()),
+            import_id: "compiler-import:missing".into(),
+        };
+        let cancelled = AnalysisControl::new(Duration::from_secs(2));
+        cancelled.cancel();
+        for control in [cancelled, AnalysisControl::new(Duration::ZERO)] {
+            let error = complete_compiler_body(
+                &query,
+                &temp.path().join("no-evidence"),
+                &DefinitionId("definition:missing".into()),
+                &params,
+                &control,
+            )
+            .unwrap_err();
+            assert_eq!(error.status, StatusCode::REQUEST_TIMEOUT);
+            assert_eq!(error.payload.code, "budget_exhausted");
+        }
+        assert!(!temp.path().join("no-evidence").exists());
+    }
 }

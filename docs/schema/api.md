@@ -24,6 +24,8 @@ All data routes require a session bearer token and an allowed request Host/Origi
 | GET /v1/compiler?snapshot_id&context_id | CompilerImportSummary[] |
 | GET /v1/compiler/bodies/{id}?snapshot_id&context_id&import_id&offset&limit | CompilerFlowPage |
 | GET /v1/compiler/bodies/{id}/dataflow?snapshot_id&context_id&import_id | AnalysisResponse&lt;ReachingDefinitions&gt; |
+| GET /v1/compiler/bodies/{id}/complexity?snapshot_id&context_id&import_id | AnalysisResponse&lt;CompilerComplexity&gt; |
+| GET /v1/analysis/maintainability/{id}?snapshot_id&context_id | AnalysisResponse&lt;SourceMaintainability&gt; |
 | GET /v1/evidence/{id}?snapshot_id&context_id | Evidence |
 | GET /v1/observations?snapshot_id&context_id | ObservationSummary[] |
 | GET /v1/observations/{id}?snapshot_id&context_id&offset&limit | ObservationWindow |
@@ -51,6 +53,13 @@ Compiler flow pages expose at most 200 blocks from a verified imported body. Its
 producer, input manifest, phase and panic strategy remain attached to each page.
 This named-phase CFG is separate from source flow points and runtime traces.
 Type display strings are not machine-readable type semantics.
+
+Compiler list, flow, dataflow and complexity requests share cooperative evidence
+loading controls: bounded directory/read chunks, canonical hash writes, mapping
+scans and page construction check cancellation. Cancelled/deadline-stopped loads
+return `408 budget_exhausted`, not a missing artifact or an empty complete list.
+The JSON parser itself is byte-bounded to a 33 MiB import record and checked
+before/after parsing; it is not individually preemptible or an OS time limit.
 
 Compiler dataflow is opt-in, intraprocedural, whole-local reaching definitions
 over one complete imported body of at most 200 blocks. The solver has a two-second
@@ -100,3 +109,22 @@ Accepted/rejected declarations bind exact candidate and input digests, persist
 separately, and do not upgrade coverage. Authentication and snapshot/context
 authorization precede every fact or review read. See
 [state-machine operations](../operations/state-machines.md) for limits and pins.
+
+## Maintainability
+
+The opt-in source report uses the exact authorized function and a complete
+verified source file up to 256 KiB. Versioned lexical and AST measures carry
+source spans, an input digest and limitations. `metrics: null` means counting
+did not complete; it must not be rendered as zero. `locations_truncated` can
+accompany completed counts and caps only the inspectable location records.
+The [metric contract](../operations/maintainability.md) documents scope, nesting
+rules, resource limits and missing analyses.
+
+Compiler complexity requires a complete imported body, at most 200 blocks and
+2,000 normalized edges. It reports `E - N + 2P` for the explicitly documented
+entry-reachable runtime successor multigraph and single synthetic-exit convention.
+The named compiler phase, identity, import and input digest remain attached.
+Imaginary edges do not become executable paths. Absent normalized exit endpoints
+or incomplete computation withhold `metrics`; no zero or source-flow substitute
+is supplied. Neither this measure nor runtime reachability proves feasibility,
+termination or safety.

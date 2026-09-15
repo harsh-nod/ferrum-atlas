@@ -241,6 +241,7 @@ pub fn analyze_compiler_complexity(
         "A terminal leaf may be unreachable, tail call, nonreturning call or assembly: its synthetic edge does not assert return or termination".into(),
         "N includes the synthetic exit, E includes its edges, P=1 for the entry-reachable connected graph; no exit endpoint means value unavailable".into(),
         "No implicit execution paths or hidden assembly/external effects are added; this measure is distinct from source-flow branches and nesting".into(),
+        format!("Configured limits: {} blocks, {} normalized edges and {} response bytes", limits.max_blocks, limits.max_edges, limits.max_response_bytes),
     ];
     if control.stopped() {
         report.envelope.stop(control);

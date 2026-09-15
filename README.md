@@ -39,6 +39,7 @@ Open the authenticated URL printed by `serve`. To analyze your project, replace 
 - Artifact-matched test outcomes and independent-clock trace streams, imported without execution.
 - Optional exact-toolchain MIR records, checked against captured source before display.
 - Bounded whole-local MIR dataflow and opt-in syntax state-transition candidates with separately retained reviewer declarations.
+- Exact dataflow source jumps, versioned lexical/nesting/unsafe-boundary metrics and separately scoped compiler CFG complexity.
 
 No Cargo commands, build scripts, rustc wrappers or procedural macros from an analyzed workspace run in read-only mode. Missing dependencies, generated inputs, macro expansions and unsupported semantics reduce coverage explicitly. Unknown targets are not guessed, and bounded results do not imply complete absence.
 
@@ -66,3 +67,6 @@ Project code is MIT OR Apache-2.0. Third-party components retain their own licen
 The [local prerelease packaging workflow](docs/operations/install.md) builds a
 versioned binary, browser bundle, schema metadata, checksums and dependency
 notices. Packaging does not establish the specification's qualified release gates.
+The [downloaded package verification](docs/milestones/package-verification.md)
+records the exact tested archive and its source commit; newer source changes are
+not silently attributed to that older artifact.

@@ -827,6 +827,11 @@ export function App() {
                 onSelect={(id) =>
                   navigate({ definition: id, edge: "", view: "explore" })
                 }
+                onSpan={(span) => {
+                  setFlowSpan(span);
+                  navigate({ edge: "", view: "explore" });
+                  setMobilePanel("source");
+                }}
               />
             )}
             {location.view === "evidence" && (

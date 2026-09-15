@@ -1,5 +1,6 @@
 //! Authenticated, bounded local HTTP queries over immutable snapshots.
 mod advanced;
+mod maintainability;
 mod state_machine;
 use atlas_model::*;
 use atlas_query::{QueryControl, QueryEngine};
@@ -122,6 +123,10 @@ pub fn router(engine: QueryEngine, config: &ServerConfig) -> anyhow::Result<Rout
         .route("/graph/neighborhood", post(neighborhood))
         .route("/graph/analysis", post(advanced::graph_analysis))
         .route("/graph/path", post(advanced::graph_path))
+        .route(
+            "/analysis/maintainability/{id}",
+            get(maintainability::source),
+        )
         .route("/analysis/state-machine/{id}", post(state_machine::analyze))
         .route(
             "/analysis/state-machine/{id}/reviews",
@@ -134,6 +139,10 @@ pub fn router(engine: QueryEngine, config: &ServerConfig) -> anyhow::Result<Rout
         .route(
             "/compiler/bodies/{id}/dataflow",
             get(advanced::compiler_dataflow),
+        )
+        .route(
+            "/compiler/bodies/{id}/complexity",
+            get(advanced::compiler_complexity),
         )
         .route("/diff", post(diff))
         .route("/flow/{id}", get(flow))
@@ -816,6 +825,8 @@ mod tests {
             "/v1/compiler",
             "/v1/compiler/bodies/id",
             "/v1/compiler/bodies/id/dataflow",
+            "/v1/compiler/bodies/id/complexity",
+            "/v1/analysis/maintainability/id",
             "/v1/analysis/state-machine/id/reviews",
         ] {
             let response = app
