@@ -1,0 +1,33 @@
+[workspace]
+
+[package]
+name = "atlas-rustc-adapter"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.96"
+build = "build.rs"
+
+[package.metadata.rust-analyzer]
+rustc_private = true
+
+[[bin]]
+name = "atlas-rustc"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "=1.0.104"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+sha2 = "=0.10.9"
+ts-rs = { version = "=11.1.0", features = ["no-serde-warnings"] }
+tempfile = "=3.27.0"
+rustix = { version = "=1.1.4", features = ["fs"] }
+
+[profile.dev]
+debug = 0
+incremental = false
+
+[profile.test]
+debug = 0
+incremental = false
