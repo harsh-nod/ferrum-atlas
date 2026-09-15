@@ -108,6 +108,84 @@ fn real_workspace_survives_restart_and_reindexes_deterministically() {
 }
 
 #[test]
+fn wide_cfg_bodies_publish_reproducible_complete_unknown_call_records() {
+    use std::fmt::Write;
+    let project = Project::new();
+    let mut source = String::from("#[cfg(feature = \"fast\")] mod wide {\n");
+    for function in 0..32 {
+        writeln!(
+            source,
+            "#[cfg_attr(feature = \"fast\", allow(dead_code))] pub fn worker_{function}(mut value: u32) -> u32 {{"
+        )
+        .unwrap();
+        for call in 0..64 {
+            writeln!(source, "value = external_{function}_{call}(value);").unwrap();
+        }
+        source.push_str("value\n}\n");
+    }
+    source.push_str("}\n");
+    fs::write(Path::new(&project.root()).join("src/lib.rs"), source).unwrap();
+    project.init();
+    let args = [
+        "index",
+        "--level",
+        "semantic",
+        "--features",
+        "fast",
+        "--timeout",
+        "60",
+    ];
+    let first = project.run(&args);
+    let second = project.run(&args);
+    assert_eq!(first["fact_digest"], second["fact_digest"]);
+    assert_eq!(first["id"], second["id"]);
+    assert_eq!(first["relation_count"], 32 * 64);
+    assert_eq!(first["coverage"]["status"], "partial");
+    let snapshot: atlas_model::Snapshot = serde_json::from_value(first).unwrap();
+    let missing = snapshot
+        .coverage
+        .reasons
+        .iter()
+        .find(|entry| entry.reason == atlas_model::UnknownReason::MissingDependency)
+        .unwrap();
+    let inherited_missing = snapshot
+        .context
+        .coverage
+        .reasons
+        .iter()
+        .find(|entry| entry.reason == atlas_model::UnknownReason::MissingDependency)
+        .unwrap();
+    assert_eq!(inherited_missing.count, 1);
+    assert_eq!(missing.count, inherited_missing.count + 32 * 64);
+    let store = atlas_store::Store::open(project.store()).unwrap();
+    let reader = store.reader(&snapshot.id).unwrap();
+    let mut calls = 0;
+    for definition in reader.definitions(100).unwrap() {
+        let outgoing = reader
+            .adjacency(&definition.id, &atlas_model::Direction::Outgoing, 100)
+            .unwrap();
+        if definition.name.starts_with("worker_") {
+            assert_eq!(outgoing.len(), 64);
+        }
+        for relation in outgoing {
+            assert!(matches!(
+                relation.target,
+                atlas_model::Target::Unknown {
+                    reason: atlas_model::UnknownReason::MissingDependency,
+                    ..
+                }
+            ));
+            calls += 1;
+        }
+    }
+    assert_eq!(calls, 32 * 64);
+    let found = project.run(&["query", "search", "--text", "worker_17"]);
+    assert_eq!(found["items"].as_array().unwrap().len(), 1);
+    assert_eq!(found["items"][0]["cfg_status"], "active");
+    assert!(project.command(&["doctor"]).status.success());
+}
+
+#[test]
 fn body_edit_has_a_pinned_before_after_diff() {
     let project = Project::new();
     project.init();
