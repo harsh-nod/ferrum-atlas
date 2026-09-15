@@ -36,7 +36,7 @@ impl QueryEngine {
         coverage
             .limitations
             .extend(after.coverage.limitations.clone());
-        coverage.limitations.push("Correspondence uses unique path, qualified name and kind; moves and renames are not inferred. Impact lists direct caller candidates, not observed execution.".into());
+        coverage.limitations.push("Correspondence uses unique path, qualified name and kind; moves and renames are not inferred. Impact lists only after-snapshot direct caller candidates, not observed execution; former callers of removed definitions and transitive consumers are not included.".into());
         let old_files: BTreeMap<_, _> = old_reader
             .files()?
             .into_iter()
