@@ -39,6 +39,7 @@ fn export(temp: &tempfile::TempDir) -> (Store, Snapshot, PathBuf) {
 
 #[test]
 fn complete_directory_round_trip_preserves_all_facts_source_and_metadata() {
+    let _process_guard = crate::tests::process_test_guard();
     let temp = tempfile::tempdir().unwrap();
     let (_, snapshot, directory) = export(&temp);
     let restored = Store::open(temp.path().join("restored")).unwrap();
@@ -74,6 +75,7 @@ fn complete_directory_round_trip_preserves_all_facts_source_and_metadata() {
 
 #[test]
 fn archive_includes_artifact_matched_observations_and_requires_validation_before_publish() {
+    let _process_guard = crate::tests::process_test_guard();
     let temp = tempfile::tempdir().unwrap();
     let store = Store::open(temp.path().join("source-store")).unwrap();
     let snapshot = store.publish(&complete_fixture(), "main", None).unwrap();
@@ -160,6 +162,7 @@ fn change_artifact(directory: &Path, name: &str, bytes: &[u8]) {
 
 #[test]
 fn corrupt_sources_or_forged_fact_identity_never_publish() {
+    let _process_guard = crate::tests::process_test_guard();
     for forge_manifest in [false, true] {
         let temp = tempfile::tempdir().unwrap();
         let (_, _, directory) = export(&temp);
@@ -185,6 +188,7 @@ fn corrupt_sources_or_forged_fact_identity_never_publish() {
 
 #[test]
 fn archive_paths_symlinks_versions_and_duplicate_entries_are_rejected() {
+    let _process_guard = crate::tests::process_test_guard();
     for mutation in 0..4 {
         let temp = tempfile::tempdir().unwrap();
         let (_, _, directory) = export(&temp);
@@ -218,6 +222,7 @@ fn archive_paths_symlinks_versions_and_duplicate_entries_are_rejected() {
 
 #[test]
 fn export_refuses_existing_destinations_and_import_obeys_head_cas() {
+    let _process_guard = crate::tests::process_test_guard();
     let temp = tempfile::tempdir().unwrap();
     let (store, snapshot, directory) = export(&temp);
     let marker = directory.join("keep");
@@ -236,6 +241,7 @@ fn export_refuses_existing_destinations_and_import_obeys_head_cas() {
 
 #[test]
 fn legacy_shards_remain_readable_but_cannot_claim_complete_export() {
+    let _process_guard = crate::tests::process_test_guard();
     let temp = tempfile::tempdir().unwrap();
     let store = Store::open(temp.path().join("source-store")).unwrap();
     let snapshot = store.publish(&complete_fixture(), "main", None).unwrap();
@@ -280,6 +286,7 @@ fn legacy_shards_remain_readable_but_cannot_claim_complete_export() {
 
 #[test]
 fn portable_output_and_envelope_reads_enforce_byte_budgets() {
+    let _process_guard = crate::tests::process_test_guard();
     let temp = tempfile::tempdir().unwrap();
     let (store, snapshot, _) = export(&temp);
     assert!(matches!(
@@ -312,6 +319,7 @@ fn portable_output_and_envelope_reads_enforce_byte_budgets() {
 
 #[test]
 fn concurrent_exports_never_replace_a_completed_directory() {
+    let _process_guard = crate::tests::process_test_guard();
     let temp = tempfile::tempdir().unwrap();
     let store = Store::open(temp.path().join("source-store")).unwrap();
     let snapshot = store.publish(&complete_fixture(), "main", None).unwrap();
@@ -344,6 +352,7 @@ fn concurrent_exports_never_replace_a_completed_directory() {
 
 #[test]
 fn export_does_not_follow_an_observation_directory_symlink() {
+    let _process_guard = crate::tests::process_test_guard();
     let temp = tempfile::tempdir().unwrap();
     let outside = tempfile::tempdir().unwrap();
     let store = Store::open(temp.path().join("source-store")).unwrap();

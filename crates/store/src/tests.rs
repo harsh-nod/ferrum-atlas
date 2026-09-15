@@ -1,6 +1,15 @@
 use super::*;
 use std::collections::BTreeMap;
 
+pub(super) fn process_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    // Forked crash-test children inherit unrelated flock descriptors until exec,
+    // even with CLOEXEC. Keep top-level fixtures separate; inner races stay concurrent.
+    static PROCESS_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    PROCESS_TESTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 pub(super) fn batch(revision: &str) -> FactBatch {
     let text = "fn entry() { leaf(); }\r\nfn leaf() {}\r\n// \u{03bb}\n".to_string();
     let file_id = FileId("file:test".into());
@@ -87,6 +96,7 @@ pub(super) fn batch(revision: &str) -> FactBatch {
 
 #[test]
 fn publication_is_deterministic_and_sources_are_exact() {
+    let _process_guard = crate::tests::process_test_guard();
     let temp = tempfile::tempdir().unwrap();
     let store = Store::open(temp.path()).unwrap();
     let first = store.publish(&batch("one"), "main", None).unwrap();
@@ -125,6 +135,7 @@ fn publication_is_deterministic_and_sources_are_exact() {
 
 #[test]
 fn private_store_creation_and_bounded_snapshot_enumeration() {
+    let _process_guard = crate::tests::process_test_guard();
     use std::os::unix::fs::PermissionsExt;
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("private-store");
@@ -177,6 +188,7 @@ fn private_store_creation_and_bounded_snapshot_enumeration() {
 
 #[test]
 fn every_failed_publication_boundary_keeps_old_head_visible() {
+    let _process_guard = crate::tests::process_test_guard();
     for stage in 1..=4 {
         let temp = tempfile::tempdir().unwrap();
         let store = Store::open(temp.path()).unwrap();
@@ -197,6 +209,7 @@ fn every_failed_publication_boundary_keeps_old_head_visible() {
 
 #[test]
 fn publication_crash_child() {
+    let _process_guard = crate::tests::process_test_guard();
     let Ok(root) = std::env::var("ATLAS_TEST_CRASH_ROOT") else {
         return;
     };
@@ -214,6 +227,7 @@ fn publication_crash_child() {
 
 #[test]
 fn abrupt_process_death_exposes_only_whole_generations() {
+    let _process_guard = crate::tests::process_test_guard();
     for stage in 1..=5 {
         let temp = tempfile::tempdir().unwrap();
         let store = Store::open(temp.path()).unwrap();
@@ -244,6 +258,7 @@ fn abrupt_process_death_exposes_only_whole_generations() {
 
 #[test]
 fn concurrent_writers_use_compare_and_swap() {
+    let _process_guard = crate::tests::process_test_guard();
     let temp = tempfile::tempdir().unwrap();
     let store = Store::open(temp.path()).unwrap();
     let first = store.publish(&batch("one"), "main", None).unwrap();
@@ -278,6 +293,7 @@ fn concurrent_writers_use_compare_and_swap() {
 
 #[test]
 fn validation_rejects_dangling_ids_invalid_spans_and_checksums() {
+    let _process_guard = crate::tests::process_test_guard();
     let mut invalid = batch("one");
     invalid.relations[0].target = Target::Resolved {
         id: DefinitionId("missing".into()),
@@ -304,6 +320,7 @@ fn validation_rejects_dangling_ids_invalid_spans_and_checksums() {
 
 #[test]
 fn corrupt_and_missing_objects_are_never_replaced_by_older_snapshots() {
+    let _process_guard = crate::tests::process_test_guard();
     let temp = tempfile::tempdir().unwrap();
     let store = Store::open(temp.path()).unwrap();
     let first = store.publish(&batch("one"), "main", None).unwrap();
@@ -334,6 +351,7 @@ fn corrupt_and_missing_objects_are_never_replaced_by_older_snapshots() {
 
 #[test]
 fn unknown_schema_is_rejected_without_migration() {
+    let _process_guard = crate::tests::process_test_guard();
     let temp = tempfile::tempdir().unwrap();
     let store = Store::open(temp.path()).unwrap();
     store
@@ -349,6 +367,7 @@ fn unknown_schema_is_rejected_without_migration() {
 
 #[test]
 fn gc_reports_orphans_without_deleting_live_or_unpublished_objects() {
+    let _process_guard = crate::tests::process_test_guard();
     let temp = tempfile::tempdir().unwrap();
     let store = Store::open(temp.path()).unwrap();
     let first = store.publish(&batch("one"), "main", None).unwrap();

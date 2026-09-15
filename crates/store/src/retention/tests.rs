@@ -22,6 +22,7 @@ fn revisions(store: &Store) -> (Snapshot, Snapshot, Snapshot) {
 
 #[test]
 fn pins_heads_recent_grace_and_observations_are_retention_roots() {
+    let _process_guard = crate::tests::process_test_guard();
     let temp = tempfile::tempdir().unwrap();
     let store = Store::open(temp.path()).unwrap();
     let (first, second, third) = revisions(&store);
@@ -92,6 +93,7 @@ fn pins_heads_recent_grace_and_observations_are_retention_roots() {
 
 #[test]
 fn reader_lifetime_blocks_collection_across_independent_store_handles() {
+    let _process_guard = crate::tests::process_test_guard();
     let temp = tempfile::tempdir().unwrap();
     let store = Store::open(temp.path()).unwrap();
     let (first, _, _) = revisions(&store);
@@ -116,6 +118,7 @@ fn reader_lifetime_blocks_collection_across_independent_store_handles() {
 
 #[test]
 fn gc_keeps_shared_sources_and_unregistered_files_and_retries_idempotently() {
+    let _process_guard = crate::tests::process_test_guard();
     let temp = tempfile::tempdir().unwrap();
     let store = Store::open(temp.path()).unwrap();
     let (first, second, third) = revisions(&store);
@@ -170,6 +173,7 @@ fn gc_keeps_shared_sources_and_unregistered_files_and_retries_idempotently() {
 
 #[test]
 fn changed_heads_or_pins_invalidate_an_exact_gc_plan() {
+    let _process_guard = crate::tests::process_test_guard();
     let temp = tempfile::tempdir().unwrap();
     let store = Store::open(temp.path()).unwrap();
     let (first, _, third) = revisions(&store);
@@ -199,6 +203,7 @@ fn changed_heads_or_pins_invalidate_an_exact_gc_plan() {
 
 #[test]
 fn garbage_collection_refuses_symlink_directories_and_replaced_owned_objects() {
+    let _process_guard = crate::tests::process_test_guard();
     let temp = tempfile::tempdir().unwrap();
     let outside = tempfile::tempdir().unwrap();
     let store = Store::open(temp.path()).unwrap();
@@ -221,6 +226,7 @@ fn garbage_collection_refuses_symlink_directories_and_replaced_owned_objects() {
 
 #[test]
 fn collection_recovers_after_catalog_commit_or_unlink_interruption() {
+    let _process_guard = crate::tests::process_test_guard();
     for stage in [1, 2] {
         let temp = tempfile::tempdir().unwrap();
         let store = Store::open(temp.path()).unwrap();
@@ -240,6 +246,7 @@ fn collection_recovers_after_catalog_commit_or_unlink_interruption() {
 
 #[test]
 fn lease_child_process() {
+    let _process_guard = crate::tests::process_test_guard();
     let Ok(root) = std::env::var("ATLAS_TEST_LEASE_ROOT") else {
         return;
     };
@@ -254,6 +261,7 @@ fn lease_child_process() {
 
 #[test]
 fn process_death_releases_reader_lease_without_expiring_live_readers() {
+    let _process_guard = crate::tests::process_test_guard();
     let temp = tempfile::tempdir().unwrap();
     let store = Store::open(temp.path()).unwrap();
     revisions(&store);
@@ -291,6 +299,7 @@ fn process_death_releases_reader_lease_without_expiring_live_readers() {
 
 #[test]
 fn gc_crash_child_process() {
+    let _process_guard = crate::tests::process_test_guard();
     let Ok(root) = std::env::var("ATLAS_TEST_GC_ROOT") else {
         return;
     };
@@ -306,6 +315,7 @@ fn gc_crash_child_process() {
 
 #[test]
 fn abrupt_gc_process_death_recovers_after_metadata_commit_and_unlink() {
+    let _process_guard = crate::tests::process_test_guard();
     for stage in [1, 2] {
         let temp = tempfile::tempdir().unwrap();
         let store = Store::open(temp.path()).unwrap();
@@ -333,6 +343,7 @@ fn abrupt_gc_process_death_recovers_after_metadata_commit_and_unlink() {
 
 #[test]
 fn duplicate_collectors_and_publishers_cannot_delete_live_objects() {
+    let _process_guard = crate::tests::process_test_guard();
     let temp = tempfile::tempdir().unwrap();
     let store = Store::open(temp.path()).unwrap();
     let (_, _, third) = revisions(&store);
@@ -375,6 +386,7 @@ fn duplicate_collectors_and_publishers_cannot_delete_live_objects() {
 
 #[test]
 fn concurrent_publish_and_gc_preserve_the_new_head() {
+    let _process_guard = crate::tests::process_test_guard();
     let temp = tempfile::tempdir().unwrap();
     let store = Store::open(temp.path()).unwrap();
     let (_, _, third) = revisions(&store);
@@ -399,6 +411,7 @@ fn concurrent_publish_and_gc_preserve_the_new_head() {
 
 #[test]
 fn recovery_rechecks_objects_republished_after_interrupted_collection() {
+    let _process_guard = crate::tests::process_test_guard();
     let temp = tempfile::tempdir().unwrap();
     let store = Store::open(temp.path()).unwrap();
     let (first, _, third) = revisions(&store);
