@@ -1,4 +1,5 @@
 //! Imported observations remain separate from extracted static evidence.
+pub mod compiler;
 use anyhow::{Context, Result, ensure};
 use atlas_model::*;
 use sha2::{Digest, Sha256};
@@ -18,7 +19,15 @@ fn scope(root: &Path, snapshot: &SnapshotId) -> PathBuf {
 }
 
 pub fn artifact_sha256(path: &Path) -> Result<String> {
-    let mut input = File::open(path)?;
+    let fd = rustix::fs::open(
+        path,
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::NONBLOCK
+            | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )?;
+    let mut input = File::from(fd);
     ensure!(
         input.metadata()?.is_file(),
         "artifact must be a regular file"

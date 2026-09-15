@@ -317,3 +317,105 @@ fn profiles_exports_and_raw_benchmark_samples_are_explicit() {
             .success()
     );
 }
+
+#[test]
+fn portable_snapshot_opens_without_original_workspace_or_analyzer_execution() {
+    let project = Project::new();
+    project.init();
+    let snapshot = project.index("semantic");
+    let archive = project.temp.path().join("portable");
+    project.run(&[
+        "export",
+        "--format",
+        "portable",
+        "--snapshot",
+        snapshot["id"].as_str().unwrap(),
+        "--output",
+        archive.to_str().unwrap(),
+    ]);
+    let restored = project.temp.path().join("restored");
+    let output = Command::new(env!("CARGO_BIN_EXE_atlas"))
+        .arg("--store")
+        .arg(&restored)
+        .args(["import", "--input", archive.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let imported: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(snapshot["id"], imported["id"]);
+    fs::remove_dir_all(project.root()).unwrap();
+    let store = atlas_store::Store::open(restored).unwrap();
+    let reader = store
+        .reader(&atlas_model::SnapshotId(
+            imported["id"].as_str().unwrap().into(),
+        ))
+        .unwrap();
+    assert!(reader.files().unwrap().iter().any(|file| {
+        reader
+            .source(&file.id)
+            .unwrap()
+            .unwrap()
+            .text
+            .contains("engine::step")
+    }));
+    assert_eq!(
+        reader.definitions(100).unwrap().len() as u64,
+        snapshot["definition_count"].as_u64().unwrap()
+    );
+}
+
+#[test]
+fn exact_gc_plan_preserves_heads_and_pins_then_reclaims_only_unpinned_history() {
+    let project = Project::new();
+    project.init();
+    let first = project.index("syntax");
+    project.run(&[
+        "pin",
+        "--snapshot",
+        first["id"].as_str().unwrap(),
+        "--name",
+        "review",
+    ]);
+    fs::write(
+        Path::new(&project.root()).join("src/engine.rs"),
+        "pub fn step(value:u32)->u32 {value+2}\n",
+    )
+    .unwrap();
+    let second = project.index("syntax");
+    let plan = project.run(&[
+        "gc",
+        "--dry-run",
+        "--keep-recent",
+        "0",
+        "--grace-seconds",
+        "0",
+    ]);
+    assert!(plan["remove_snapshots"].as_array().unwrap().is_empty());
+    project.run(&["unpin", "--name", "review"]);
+    let plan = project.run(&[
+        "gc",
+        "--dry-run",
+        "--keep-recent",
+        "0",
+        "--grace-seconds",
+        "0",
+    ]);
+    assert!(
+        plan["remove_snapshots"]
+            .as_array()
+            .unwrap()
+            .contains(&first["id"])
+    );
+    let path = project.temp.path().join("gc-plan.json");
+    fs::write(&path, serde_json::to_vec(&plan).unwrap()).unwrap();
+    project.run(&["gc", "--execute", "--plan", path.to_str().unwrap()]);
+    let snapshots = project.run(&["snapshots"]);
+    assert_eq!(snapshots.as_array().unwrap().len(), 1);
+    assert_eq!(snapshots[0]["id"], second["id"]);
+    assert!(Path::new(&project.root()).join("src/engine.rs").is_file());
+    assert!(project.command(&["doctor"]).status.success());
+}

@@ -34,6 +34,7 @@ pub struct ServerConfig {
     pub web_dir: PathBuf,
     pub max_concurrent_queries: usize,
     pub observations_dir: PathBuf,
+    pub compiler_dir: PathBuf,
     pub scheduler: Option<atlas_scheduler::Scheduler>,
 }
 
@@ -65,13 +66,13 @@ pub fn capabilities() -> Capabilities {
     Capabilities {
         api_version: API_VERSION.into(),
         schema_version: SCHEMA_VERSION,
-        analysis_levels: vec!["syntax".into(), "semantic".into()],
-        graph_families: vec!["calls".into(), "source_flow".into()],
+        analysis_levels: vec!["syntax".into(), "semantic".into(), "compiler_import".into()],
+        graph_families: vec!["calls".into(), "source_flow".into(), "compiler_cfg".into(), "selected_components".into(), "trace_alignment".into()],
         trust_modes: vec!["read_only".into()],
         limitations: vec![
             "Local captured source only; missing dependencies and build outputs reduce coverage."
                 .into(),
-            "Compiler MIR, executable analysis, and hosted multi-user service are unavailable."
+            "Compiler MIR requires an explicitly imported compatible bundle; executable analysis and hosted multi-user service are unavailable."
                 .into(),
             "Source-flow points do not represent a complete compiler control-flow graph.".into(),
             "Large-corpus performance and human comprehension targets are not yet qualified."
@@ -87,6 +88,7 @@ struct AppState {
     hosts: Arc<Vec<String>>,
     permits: Arc<Semaphore>,
     observations_dir: Arc<PathBuf>,
+    compiler_dir: Arc<PathBuf>,
     scheduler: Option<atlas_scheduler::Scheduler>,
     event_streams: Arc<Semaphore>,
 }
@@ -102,6 +104,7 @@ pub fn router(engine: QueryEngine, config: &ServerConfig) -> anyhow::Result<Rout
         ]),
         permits: Arc::new(Semaphore::new(config.max_concurrent_queries)),
         observations_dir: Arc::new(config.observations_dir.clone()),
+        compiler_dir: Arc::new(config.compiler_dir.clone()),
         scheduler: config.scheduler.clone(),
         event_streams: Arc::new(Semaphore::new(8)),
     };
@@ -117,6 +120,8 @@ pub fn router(engine: QueryEngine, config: &ServerConfig) -> anyhow::Result<Rout
         .route("/graph/path", post(advanced::graph_path))
         .route("/queries/impact", post(advanced::impact))
         .route("/traces/compare", post(advanced::trace_compare))
+        .route("/compiler", get(advanced::compiler_imports))
+        .route("/compiler/bodies/{id}", get(advanced::compiler_flow))
         .route("/diff", post(diff))
         .route("/flow/{id}", get(flow))
         .route("/bodies/{id}/flow", get(flow))
@@ -472,9 +477,10 @@ async fn cancel_job(
 ) -> Result<Json<JobRecord>, HttpError> {
     let scheduler = scheduler(&state)?;
     perform(state, move |_| {
-        scheduler
-            .cancel(&id)
-            .map_err(|_| HttpError::new(StatusCode::NOT_FOUND, "not_found", "Unknown analysis job"))
+        scheduler.get(&id).map_err(|_| {
+            HttpError::new(StatusCode::NOT_FOUND, "not_found", "Unknown analysis job")
+        })?;
+        scheduler.cancel(&id).map_err(job_error)
     })
     .await
 }
@@ -489,9 +495,6 @@ async fn job_events(
     HttpError,
 > {
     let scheduler = scheduler(&state)?;
-    scheduler
-        .get(&id)
-        .map_err(|_| HttpError::new(StatusCode::NOT_FOUND, "not_found", "Unknown analysis job"))?;
     let after = match headers.get("last-event-id") {
         Some(value) => value
             .to_str()
@@ -517,11 +520,12 @@ async fn job_events(
                 "All progress stream slots are busy",
             )
         })?;
+    event_job(scheduler.clone(), id.clone()).await?;
     let stream = futures_util::stream::unfold(
         (scheduler, id, after, permit),
         |(scheduler, id, after, permit)| async move {
             loop {
-                let job = scheduler.get(&id).ok()?;
+                let job = event_job(scheduler.clone(), id.clone()).await.ok()?;
                 if let Some(event) = job.events.iter().find(|event| event.sequence > after) {
                     let sequence = event.sequence;
                     let event = axum::response::sse::Event::default()
@@ -539,6 +543,26 @@ async fn job_events(
         },
     );
     Ok(axum::response::Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::default()))
+}
+
+async fn event_job(
+    scheduler: atlas_scheduler::Scheduler,
+    id: String,
+) -> Result<JobRecord, HttpError> {
+    let task = tokio::task::spawn_blocking(move || scheduler.get(&id));
+    match tokio::time::timeout(Duration::from_secs(3), task).await {
+        Ok(Ok(Ok(record))) => Ok(record),
+        Ok(Ok(Err(_))) => Err(HttpError::new(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "Unknown analysis job",
+        )),
+        _ => Err(HttpError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "analysis_unavailable",
+            "Progress is temporarily unavailable",
+        )),
+    }
 }
 async fn snapshot(
     State(state): State<AppState>,
@@ -723,6 +747,7 @@ mod tests {
             web_dir: PathBuf::from("missing-web-assets"),
             max_concurrent_queries: 4,
             observations_dir: PathBuf::from("missing-observations"),
+            compiler_dir: PathBuf::from("missing-compiler"),
             scheduler: None,
         }
     }
@@ -759,6 +784,8 @@ mod tests {
             "/v1/jobs/id/events",
             "/v1/bodies/id/flow",
             "/v1/traces/id/window",
+            "/v1/compiler",
+            "/v1/compiler/bodies/id",
         ] {
             let response = app
                 .clone()
@@ -772,6 +799,10 @@ mod tests {
             "/v1/diff",
             "/v1/jobs",
             "/v1/jobs/id/cancel",
+            "/v1/graph/analysis",
+            "/v1/graph/path",
+            "/v1/queries/impact",
+            "/v1/traces/compare",
         ] {
             let response = app
                 .clone()
@@ -986,6 +1017,7 @@ mod tests {
             hosts: Arc::new(vec![]),
             permits: Arc::new(Semaphore::new(1)),
             observations_dir: Arc::new(temp.path().join("observations")),
+            compiler_dir: Arc::new(temp.path().join("compiler")),
             scheduler: None,
             event_streams: Arc::new(Semaphore::new(8)),
         };

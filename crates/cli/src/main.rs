@@ -1,4 +1,5 @@
 use anyhow::{Context, Result, bail, ensure};
+mod watch;
 use atlas_frontend::AnalysisLevel;
 use atlas_ingest::CaptureOptions;
 use atlas_model::*;
@@ -68,7 +69,32 @@ enum Commands {
         #[arg(long, hide = true)]
         job_id: Option<String>,
     },
-    /// Serve the browser and authenticated read-only API on loopback.
+    /// Reconcile source changes through a bounded warm analysis worker.
+    Watch {
+        #[arg(long, default_value = "default")]
+        profile: String,
+        #[arg(long, value_enum, default_value_t = Level::Semantic)]
+        level: Level,
+        #[arg(long, default_value = "unknown")]
+        target: String,
+        #[arg(long, value_delimiter = ',')]
+        features: Vec<String>,
+        #[arg(long)]
+        no_default_features: bool,
+        #[arg(long)]
+        context: Option<PathBuf>,
+        #[arg(long, default_value_t = 1000)]
+        interval_ms: u64,
+        #[arg(long)]
+        iterations: Option<u64>,
+        #[arg(long, default_value_t = 120)]
+        timeout: u64,
+        #[arg(long, default_value_t = 8192)]
+        memory_mib: u64,
+        #[arg(long, default_value_t = 4096)]
+        disk_quota_mib: u64,
+    },
+    /// Serve the browser and authenticated API on loopback.
     Serve {
         #[arg(long, default_value = "127.0.0.1:7878")]
         listen: SocketAddr,
@@ -146,6 +172,22 @@ enum Commands {
         snapshot: String,
         #[arg(long)]
         output: PathBuf,
+        #[arg(long, value_enum, default_value_t = ExportFormat::Manifest)]
+        format: ExportFormat,
+    },
+    /// Restore a validated portable snapshot into this store.
+    Import {
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long, default_value = "imported")]
+        profile: String,
+    },
+    /// Import a pinned compiler bundle without running a compiler.
+    ImportCompiler {
+        #[arg(long)]
+        snapshot: String,
+        #[arg(long)]
+        bundle: PathBuf,
     },
     /// Import artifact-matched test outcomes and trace streams without execution.
     ImportEvidence {
@@ -174,6 +216,11 @@ enum Commands {
         #[arg(long)]
         output: PathBuf,
     },
+    #[command(hide = true)]
+    WorkerSession {
+        #[arg(long)]
+        job: PathBuf,
+    },
 }
 
 #[derive(Clone, Copy, ValueEnum, Serialize, Deserialize)]
@@ -188,6 +235,11 @@ enum QueryKind {
     Callers,
     Callees,
     Both,
+}
+#[derive(Clone, Copy, ValueEnum)]
+enum ExportFormat {
+    Manifest,
+    Portable,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -219,6 +271,9 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     if let Commands::Worker { job, output } = &cli.command {
         return worker(job, output);
+    }
+    if let Commands::WorkerSession { job } = &cli.command {
+        return watch::worker(job);
     }
     if let Commands::Index {
         supervisor_pid: Some(parent),
@@ -370,6 +425,58 @@ async fn run(cli: Cli) -> Result<()> {
             );
             print_json(&snapshot)?;
         }
+        Commands::Watch {
+            profile,
+            level,
+            target,
+            features,
+            no_default_features,
+            context,
+            interval_ms,
+            iterations,
+            timeout,
+            memory_mib,
+            disk_quota_mib,
+        } => {
+            let workspace = read_config(&cli.store)?.workspace;
+            let explicit_context = context
+                .as_deref()
+                .map(|path| read_json(path, 1024 * 1024))
+                .transpose()?;
+            let job = IndexJob {
+                workspace,
+                profile,
+                target,
+                features,
+                default_features: !no_default_features,
+                cfg: Default::default(),
+                explicit_context,
+                level,
+                memory_mib,
+                timeout,
+                parent_pid: std::process::id(),
+                progress_file: None,
+            };
+            let cancellation = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let worker_cancel = cancellation.clone();
+            let mut task = tokio::task::spawn_blocking(move || {
+                watch::run(
+                    watch::WatchConfig {
+                        store: cli.store,
+                        job,
+                        interval_ms,
+                        iterations,
+                        disk_quota_mib,
+                    },
+                    worker_cancel,
+                )
+            });
+            let report = tokio::select! {
+                result = &mut task => result??,
+                signal = tokio::signal::ctrl_c() => { signal?; cancellation.store(true, std::sync::atomic::Ordering::Release); task.await?? }
+            };
+            print_json(&report)?;
+        }
         Commands::Serve {
             listen,
             web_dir,
@@ -427,6 +534,7 @@ async fn run(cli: Cli) -> Result<()> {
                 web_dir,
                 max_concurrent_queries: query_slots,
                 observations_dir: cli.store.join("observations"),
+                compiler_dir: cli.store.join("compiler"),
                 scheduler,
             };
             config.validate()?;
@@ -481,7 +589,7 @@ async fn run(cli: Cli) -> Result<()> {
             print_json(&report)?;
             ensure!(report.valid, "store integrity check failed");
             eprintln!(
-                "Read-only analysis; compiler MIR and executable worker sandbox unavailable. No workspace commands were run."
+                "Read-only analysis; compiler imports are separate and executable worker sandbox is unavailable. No workspace commands were run."
             );
         }
         Commands::Gc {
@@ -557,8 +665,100 @@ async fn run(cli: Cli) -> Result<()> {
             drop(reader);
             print_json(&imported)?;
         }
-        Commands::Export { snapshot, output } => {
+        Commands::ImportCompiler { snapshot, bundle } => {
+            let bundle: CompilerBundle = read_json(&bundle, 32 * 1024 * 1024)?;
+            let store = Store::open(&cli.store)?;
+            let id = SnapshotId(snapshot);
+            let reader = store.reader(&id)?;
+            let definitions = reader.definitions_bounded(100_001, 32 * 1024 * 1024)?;
+            ensure!(
+                definitions.len() <= 100_000,
+                "compiler mapping exceeds definition budget"
+            );
+            let metadata = reader.files()?;
+            let mut files = Vec::new();
+            let mut source_bytes = 0usize;
+            for input in &bundle.inputs.files {
+                let file = metadata
+                    .iter()
+                    .find(|file| file.path == input.path)
+                    .context("compiler source is absent from snapshot")?;
+                let source = reader
+                    .source(&file.id)?
+                    .context("missing compiler source")?;
+                source_bytes = source_bytes.saturating_add(source.text.len());
+                ensure!(
+                    source_bytes <= 64 * 1024 * 1024,
+                    "compiler source budget exceeds 64 MiB"
+                );
+                files.push(source);
+            }
+            let imported = atlas_evidence::compiler::import(
+                &cli.store.join("compiler"),
+                &bundle,
+                &reader.snapshot,
+                &files,
+                &definitions,
+            )?;
+            store.pin(&id, &format!("compiler:{}", id.0))?;
+            print_json(&imported)?;
+        }
+        Commands::Import { input, profile } => {
+            let store = Store::open(&cli.store)?;
+            let head = store.head(&profile)?;
+            let imported = store.import_directory(
+                &input,
+                &profile,
+                head.as_ref(),
+                |snapshot, definitions, observations| {
+                    for bundle in observations {
+                        atlas_evidence::validate(
+                            bundle,
+                            snapshot,
+                            definitions,
+                            &bundle.artifact.sha256,
+                        )
+                        .map_err(|error| atlas_store::Error::Invalid(error.to_string()))?;
+                    }
+                    Ok(())
+                },
+            )?;
+            let definitions = imported
+                .reader
+                .definitions_bounded(100_001, 32 * 1024 * 1024)?;
+            ensure!(
+                definitions.len() <= 100_000,
+                "restored observation mapping exceeds budget"
+            );
+            let ids = definitions
+                .into_iter()
+                .map(|definition| definition.id)
+                .collect();
+            for bundle in &imported.observations {
+                atlas_evidence::restore(
+                    &cli.store.join("observations"),
+                    bundle,
+                    &imported.snapshot,
+                    &ids,
+                )
+                .context(
+                    "snapshot restored but observation restore failed; retry the same import",
+                )?;
+            }
+            print_json(&imported.snapshot)?;
+        }
+        Commands::Export {
+            snapshot,
+            output,
+            format,
+        } => {
             ensure!(!output.exists(), "export destination already exists");
+            if matches!(format, ExportFormat::Portable) {
+                print_json(
+                    &Store::open(&cli.store)?.export_directory(&SnapshotId(snapshot), &output)?,
+                )?;
+                return Ok(());
+            }
             let query = QueryEngine::new(Store::open(&cli.store)?)?;
             let id = SnapshotId(snapshot);
             let metadata = query.snapshot(&id)?;
@@ -612,7 +812,7 @@ async fn run(cli: Cli) -> Result<()> {
                 None => print_json(&report)?,
             }
         }
-        Commands::Worker { .. } => unreachable!(),
+        Commands::Worker { .. } | Commands::WorkerSession { .. } => unreachable!(),
     }
     Ok(())
 }
@@ -779,6 +979,24 @@ fn private_json(path: &Path, value: &impl Serialize) -> Result<()> {
     serde_json::to_writer_pretty(&mut file, value)?;
     file.sync_all()?;
     Ok(())
+}
+
+fn read_json<T: serde::de::DeserializeOwned>(path: &Path, limit: u64) -> Result<T> {
+    use std::io::Read;
+    let fd = rustix::fs::open(
+        path,
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::NONBLOCK
+            | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )?;
+    let file = File::from(fd);
+    ensure!(
+        file.metadata()?.is_file() && file.metadata()?.len() <= limit,
+        "input is not a bounded regular file"
+    );
+    Ok(serde_json::from_reader(file.take(limit + 1))?)
 }
 
 fn directory_bytes(path: &Path) -> Result<u64> {

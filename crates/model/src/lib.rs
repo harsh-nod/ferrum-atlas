@@ -10,6 +10,10 @@ mod jobs;
 pub use jobs::*;
 mod analysis;
 pub use analysis::*;
+mod compiler;
+pub use compiler::*;
+mod compiler_import;
+pub use compiler_import::*;
 
 pub const SCHEMA_VERSION: u32 = 1;
 pub const API_VERSION: &str = "1";
@@ -456,6 +460,31 @@ pub fn typescript() -> String {
         PathRequest,
         TraceAlignmentRequest,
         TraceAlignmentResponse<Definition>
+    );
+    emit!(
+        CompilerBundle,
+        CompilerIdentity,
+        CompilerInputs,
+        CompilerArtifact,
+        CompilerSourceFile,
+        CompilerSourceMapping,
+        CompilerBody,
+        CompilerLocal,
+        CompilerSourceScope,
+        CompilerBlock,
+        CompilerStatement,
+        CompilerLocalEffects,
+        CompilerUnknownEffect,
+        CompilerTerminator,
+        CompilerSuccessor,
+        CompilerEdgeKind,
+        CompilerUnwind,
+        CompilerCallTarget,
+        CompilerDefinitionMapping,
+        CompilerBodyMapping,
+        CompilerImport,
+        CompilerImportSummary,
+        CompilerFlowPage
     );
     output
 }

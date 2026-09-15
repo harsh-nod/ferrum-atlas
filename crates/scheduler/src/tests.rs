@@ -166,6 +166,27 @@ fn interrupted_journal_is_not_silently_replayed() {
 }
 
 #[test]
+fn contended_publication_never_holds_job_mutex_or_waits_unbounded() {
+    let temp = tempfile::tempdir().unwrap();
+    let exe = executable(&temp, "exec /bin/sleep 30");
+    let scheduler = Scheduler::start(temp.path(), &exe, SchedulerConfig::default()).unwrap();
+    let job = scheduler.submit(request("default")).unwrap();
+    wait(&scheduler, &job.id, |s| s == JobStatus::Running);
+    let fence = publication_guard(temp.path(), "default", &job.id).unwrap();
+    let other = scheduler.clone();
+    let thread = std::thread::spawn(move || other.submit(request("another")));
+    std::thread::sleep(Duration::from_millis(20));
+    let start = Instant::now();
+    scheduler.get(&job.id).unwrap();
+    assert!(start.elapsed() < Duration::from_millis(100));
+    assert!(thread.join().unwrap().is_err());
+    assert!(scheduler.cancel(&job.id).is_err());
+    drop(fence);
+    scheduler.cancel(&job.id).unwrap();
+    wait(&scheduler, &job.id, JobStatus::terminal);
+}
+
+#[test]
 fn dropping_last_handle_kills_process_group_and_keeps_history_private() {
     let temp = tempfile::tempdir().unwrap();
     let pid = temp.path().join("pid");

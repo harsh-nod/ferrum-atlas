@@ -192,6 +192,7 @@ impl Scheduler {
             !self.inner.stop.load(Ordering::Acquire),
             "scheduler unavailable"
         );
+        let _fence = fence_lock(&self.inner.root)?;
         let mut jobs = self
             .inner
             .jobs
@@ -210,7 +211,6 @@ impl Scheduler {
             "analysis queue is full"
         );
         let mut updated = jobs.clone();
-        let _fence = fence_lock(&self.inner.root)?;
         for job in &mut updated {
             if job.request.profile == request.profile && !job.status.terminal() {
                 job.status = if job.status == JobStatus::Queued {
@@ -280,6 +280,11 @@ impl Scheduler {
             .context("unknown job")
     }
     pub fn cancel(&self, id: &str) -> Result<JobRecord> {
+        let existing = self.get(id)?;
+        if existing.status.terminal() || existing.status == JobStatus::Cancelling {
+            return Ok(existing);
+        }
+        let _fence = fence_lock(&self.inner.root)?;
         let mut jobs = self
             .inner
             .jobs
@@ -293,7 +298,6 @@ impl Scheduler {
         if job.status.terminal() || job.status == JobStatus::Cancelling {
             return Ok(job.clone());
         }
-        let _fence = fence_lock(&self.inner.root)?;
         write_fence(&self.inner.root, &job.request.profile, "cancelled")?;
         job.status = if job.status == JobStatus::Queued {
             JobStatus::Cancelled
@@ -323,7 +327,18 @@ fn fence_lock(root: &Path) -> Result<File> {
         .truncate(false)
         .mode(0o600)
         .open(root.join("publication.lock"))?;
-    file.lock()?;
+    let start = Instant::now();
+    loop {
+        match file.try_lock() {
+            Ok(()) => break,
+            Err(std::fs::TryLockError::WouldBlock)
+                if start.elapsed() < Duration::from_millis(100) =>
+            {
+                std::thread::sleep(Duration::from_millis(5))
+            }
+            Err(error) => return Err(anyhow::anyhow!("publication fence unavailable: {error}")),
+        }
+    }
     Ok(file)
 }
 fn write_fence(root: &Path, profile: &str, id: &str) -> Result<()> {
@@ -388,7 +403,10 @@ fn event(job: &mut JobRecord, stage: JobStage) {
     if job.events.len() == MAX_EVENTS {
         job.events.remove(0);
     }
-    let sequence = job.events.last().map_or(1, |e| e.sequence + 1);
+    let sequence = job
+        .events
+        .last()
+        .map_or(1, |e| e.sequence.saturating_add(1));
     job.events.push(JobEvent {
         sequence,
         timestamp_ms: timestamp(),

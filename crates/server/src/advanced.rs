@@ -1,4 +1,58 @@
 use super::*;
+
+pub(super) async fn compiler_imports(
+    State(state): State<AppState>,
+    Query(pin): Query<Pinned>,
+) -> Result<Json<Vec<CompilerImportSummary>>, HttpError> {
+    let root = state.compiler_dir.clone();
+    perform(state, move |q| {
+        check_observation_scope(&q, &pin.snapshot_id, &pin.context_id)?;
+        atlas_evidence::compiler::list(&root, &pin.snapshot_id, &pin.context_id).map_err(|_| {
+            HttpError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable_evidence",
+                "Compiler evidence is unavailable or invalid",
+            )
+        })
+    })
+    .await
+}
+
+#[derive(Deserialize)]
+pub(super) struct CompilerWindowParams {
+    snapshot_id: SnapshotId,
+    context_id: ContextId,
+    import_id: String,
+    offset: Option<u32>,
+    limit: Option<u32>,
+}
+pub(super) async fn compiler_flow(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(params): Query<CompilerWindowParams>,
+) -> Result<Json<CompilerFlowPage>, HttpError> {
+    let root = state.compiler_dir.clone();
+    perform(state, move |q| {
+        let definition = DefinitionId(id);
+        q.definition(&params.snapshot_id, &params.context_id, &definition)?;
+        atlas_evidence::compiler::flow(
+            &root,
+            &params.snapshot_id,
+            &params.context_id,
+            &definition,
+            &params.import_id,
+            (params.offset.unwrap_or(0), params.limit.unwrap_or(200)),
+        )
+        .map_err(|_| {
+            HttpError::new(
+                StatusCode::NOT_FOUND,
+                "unavailable_evidence",
+                "No compatible compiler body window is available for this selection",
+            )
+        })
+    })
+    .await
+}
 use atlas_analysis::{
     AnalysisControl, AnalysisLimits, GraphAnalysis, PathAnalysis, SelectedGraph,
     TraceCompareRequest, TraceComparison,

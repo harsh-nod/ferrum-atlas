@@ -11,6 +11,11 @@ pub use reader::SnapshotReader;
 pub use retention::{GcObject, GcPlan, GcReport, RetainedSnapshot, RetentionPolicy, SnapshotPin};
 pub use validate::validate;
 
+/// The normalized immutable fact identity used during publication.
+pub fn fact_digest(batch: &atlas_model::FactBatch) -> String {
+    atlas_model::digest("facts", &validate::normalize(batch))
+}
+
 use atlas_model::*;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::Serialize;
