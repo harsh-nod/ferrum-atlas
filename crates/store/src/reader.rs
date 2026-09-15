@@ -151,7 +151,7 @@ impl SnapshotReader {
     }
 
     pub fn definition_evidence(&self, id: &DefinitionId, limit: usize) -> Result<Vec<Evidence>> {
-        let mut statement = self.connection.prepare("SELECT e.payload FROM evidence e WHERE e.id IN (SELECT evidence_id FROM relations WHERE source_id=?1 LIMIT ?2) ORDER BY e.id LIMIT ?2")?;
+        let mut statement = self.connection.prepare("SELECT e.payload FROM evidence e WHERE e.id IN (SELECT DISTINCT evidence_id FROM relations WHERE source_id=?1 ORDER BY evidence_id LIMIT ?2) ORDER BY e.id LIMIT ?2")?;
         collect(
             statement.query_map(params![id.0, limit.min(1001) as u32], |r| {
                 r.get::<_, String>(0)

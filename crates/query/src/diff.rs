@@ -151,7 +151,11 @@ impl QueryEngine {
                 truncated = true;
                 break;
             }
-            for relation in new_reader.adjacency(&definition.id, &Direction::Incoming, 201)? {
+            let incoming = new_reader.adjacency(&definition.id, &Direction::Incoming, 201)?;
+            if incoming.len() == 201 {
+                truncated = true;
+            }
+            for relation in incoming {
                 if impact.contains_key(&relation.source) {
                     continue;
                 }

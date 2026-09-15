@@ -520,3 +520,62 @@ fn large_fact_payloads_exhaust_read_budgets_without_complete_empty_answers() {
     assert!(result.page.truncated);
     assert_eq!(result.coverage.status, Status::Partial);
 }
+
+#[test]
+fn repeated_call_sites_do_not_hide_later_distinct_evidence() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = Store::open(temp.path()).unwrap();
+    let mut facts = batch(205);
+    let mut later = facts.evidence[0].clone();
+    later.id = EvidenceId("evidence:later".into());
+    facts.relations.last_mut().unwrap().evidence_id = later.id.clone();
+    facts.evidence.push(later.clone());
+    let snapshot = store.publish(&facts, "main", None).unwrap();
+    let engine = QueryEngine::new(store).unwrap();
+    let detail = engine
+        .definition(&snapshot.id, &snapshot.context.id, &facts.definitions[0].id)
+        .unwrap();
+    assert_eq!(detail.evidence.len(), 2);
+    assert!(detail.evidence.contains(&later));
+    assert_eq!(detail.coverage.status, Status::Complete);
+}
+
+#[test]
+fn diff_marks_truncated_callsite_postings_even_with_duplicate_callers() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = Store::open(temp.path()).unwrap();
+    let mut facts = batch(3);
+    let template = facts.relations[0].clone();
+    facts.relations = (0..202)
+        .map(|index| Relation {
+            id: RelationId(format!("relation:{index:05}")),
+            source: if index == 201 {
+                facts.definitions[2].id.clone()
+            } else {
+                facts.definitions[0].id.clone()
+            },
+            ..template.clone()
+        })
+        .collect();
+    let before = store.publish(&facts, "main", None).unwrap();
+    facts.definitions[1].body_hash = "body:changed".into();
+    let after = store.publish(&facts, "main", Some(&before.id)).unwrap();
+    let engine = QueryEngine::new(store).unwrap();
+    let result = engine
+        .diff(&DiffRequest {
+            before: before.id,
+            after: after.id,
+        })
+        .unwrap();
+    assert_eq!(result.changes.len(), 1);
+    assert_eq!(result.impact_candidates.len(), 1);
+    assert!(result.truncated);
+    assert_eq!(result.coverage.status, Status::Partial);
+    assert!(
+        result
+            .coverage
+            .reasons
+            .iter()
+            .any(|entry| entry.reason == UnknownReason::BudgetExhausted)
+    );
+}
