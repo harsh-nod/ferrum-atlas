@@ -7,6 +7,7 @@ pub enum Error {
     UnknownSnapshot,
     Unavailable(String),
     UnsupportedVersion(u32),
+    BudgetExhausted,
     Io(std::io::Error),
     Sql(rusqlite::Error),
     Json(serde_json::Error),
@@ -19,6 +20,7 @@ impl Error {
             Self::UnknownSnapshot => "unknown_snapshot",
             Self::Unavailable(_) | Self::Io(_) => "unavailable_shard",
             Self::UnsupportedVersion(_) => "unsupported_schema",
+            Self::BudgetExhausted => "budget_exhausted",
             Self::Sql(rusqlite::Error::SqliteFailure(error, _))
                 if error.code == rusqlite::ErrorCode::OperationInterrupted =>
             {
@@ -35,6 +37,7 @@ impl fmt::Display for Error {
             Self::Conflict => f.write_str("workspace head changed before publication"),
             Self::UnknownSnapshot => f.write_str("unknown snapshot"),
             Self::UnsupportedVersion(v) => write!(f, "unsupported storage schema {v}"),
+            Self::BudgetExhausted => f.write_str("query budget exhausted"),
             Self::Io(e) => e.fmt(f),
             Self::Sql(e) => e.fmt(f),
             Self::Json(e) => e.fmt(f),

@@ -79,7 +79,9 @@ impl QueryEngine {
     }
 
     pub fn snapshots(&self) -> Result<Vec<Snapshot>> {
-        Ok(self.store.snapshots_scoped(self.repositories.as_ref())?)
+        Ok(self
+            .store
+            .snapshots_scoped_bounded(self.repositories.as_ref(), 1000, RESPONSE_BYTES)?)
     }
 
     pub fn snapshot(&self, id: &SnapshotId) -> Result<Snapshot> {
@@ -97,7 +99,9 @@ impl QueryEngine {
         if self.store.snapshot(snapshot)?.context.id != *context {
             return Err(Error::ContextMismatch);
         }
-        let reader = self.store.reader(snapshot)?;
+        let reader = self
+            .store
+            .reader_with_stop(snapshot, &|| control.stopped())?;
         let control = control.clone();
         reader.progress_handler(move || control.stopped())?;
         Ok(reader)
@@ -118,21 +122,45 @@ impl QueryEngine {
                 "search requires limit 1..200 and at most 256 query bytes".into(),
             ));
         }
-        let reader = self.reader(snapshot, context, &control)?;
+        let reader = match self.reader(snapshot, context, &control) {
+            Ok(reader) => reader,
+            Err(error) if error.code() == "budget_exhausted" => {
+                let mut coverage = self.snapshot(snapshot)?.coverage;
+                budget_coverage(
+                    &mut coverage,
+                    "Search deadline reached during snapshot validation",
+                );
+                return bounded(QueryResponse {
+                    api_version: API_VERSION.into(),
+                    snapshot_id: snapshot.clone(),
+                    context_id: context.clone(),
+                    items: vec![],
+                    coverage,
+                    page: Page {
+                        truncated: true,
+                        next_cursor: None,
+                    },
+                    work: Work {
+                        deadline_reached: true,
+                        elapsed_ms: elapsed(started),
+                    },
+                });
+            }
+            Err(error) => return Err(error),
+        };
         let query = query.trim().to_lowercase();
         let query_hash = digest("search", &query);
         let scope = digest("authorization", &self.repositories);
         let cursor = next
             .map(|value| cursor::decode(value, &self.secret))
             .transpose()?;
-        if let Some(cursor) = &cursor {
-            if cursor.snapshot != *snapshot
+        if let Some(cursor) = &cursor
+            && (cursor.snapshot != *snapshot
                 || cursor.context != *context
                 || cursor.query != query_hash
-                || cursor.scope != scope
-            {
-                return Err(Error::InvalidCursor);
-            }
+                || cursor.scope != scope)
+        {
+            return Err(Error::InvalidCursor);
         }
         let mut coverage = reader.snapshot.coverage.clone();
         let mut deadline_reached = control.stopped();
@@ -338,7 +366,33 @@ impl QueryEngine {
                 "graph limits: 1..200 nodes, 1..500 edges, depth 0..4".into(),
             ));
         }
-        let reader = self.reader(&request.snapshot_id, &request.context_id, control)?;
+        let reader = match self.reader(&request.snapshot_id, &request.context_id, control) {
+            Ok(reader) => reader,
+            Err(error) if error.code() == "budget_exhausted" => {
+                let mut coverage = self.snapshot(&request.snapshot_id)?.coverage;
+                budget_coverage(
+                    &mut coverage,
+                    "Graph deadline or cancellation reached during snapshot validation",
+                );
+                return bounded(GraphResponse {
+                    api_version: API_VERSION.into(),
+                    snapshot_id: request.snapshot_id.clone(),
+                    context_id: request.context_id.clone(),
+                    nodes: vec![],
+                    edges: vec![],
+                    coverage,
+                    page: Page {
+                        truncated: true,
+                        next_cursor: None,
+                    },
+                    work: Work {
+                        deadline_reached: true,
+                        elapsed_ms: elapsed(started),
+                    },
+                });
+            }
+            Err(error) => return Err(error),
+        };
         let root = reader
             .definition(&request.definition_id)?
             .ok_or(Error::NotFound)?;
@@ -361,15 +415,15 @@ impl QueryEngine {
             if depth >= request.depth || !visited.insert(id.clone()) {
                 continue;
             }
-            let remaining = request.max_edges as usize - edges.len();
-            let adjacent = match reader.adjacency(&id, &request.direction, remaining + 1) {
-                Ok(items) => items,
-                Err(error) if error.code() == "budget_exhausted" => {
-                    truncated = true;
-                    break;
-                }
-                Err(error) => return Err(error.into()),
-            };
+            let adjacent =
+                match reader.adjacency(&id, &request.direction, request.max_edges as usize + 1) {
+                    Ok(items) => items,
+                    Err(error) if error.code() == "budget_exhausted" => {
+                        truncated = true;
+                        break;
+                    }
+                    Err(error) => return Err(error.into()),
+                };
             for relation in adjacent {
                 if control.stopped() {
                     truncated = true;
@@ -386,10 +440,11 @@ impl QueryEngine {
                 if !nodes.contains_key(&relation.source) {
                     required.push(relation.source.clone());
                 }
-                if let Target::Resolved { id } = &relation.target {
-                    if !nodes.contains_key(id) && !required.contains(id) {
-                        required.push(id.clone());
-                    }
+                if let Target::Resolved { id } = &relation.target
+                    && !nodes.contains_key(id)
+                    && !required.contains(id)
+                {
+                    required.push(id.clone());
                 }
                 if nodes.len() + required.len() > request.max_nodes as usize {
                     truncated = true;
@@ -502,7 +557,7 @@ fn source_window(
         start_line,
         total_lines,
         start_byte: start as u32,
-        truncated: end < source.text.len(),
+        truncated: start > 0 || end < source.text.len(),
         encoding: "utf-8".into(),
     })
 }

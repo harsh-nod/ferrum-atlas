@@ -365,6 +365,23 @@ fn graph_enforces_high_degree_budgets_and_cancellation_is_partial() {
 }
 
 #[test]
+fn bidirectional_duplicate_edges_do_not_hide_unvisited_frontiers() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = Store::open(temp.path()).unwrap();
+    let mut facts = batch(4);
+    facts.relations[2].source = facts.definitions[1].id.clone();
+    let snapshot = store.publish(&facts, "main", None).unwrap();
+    let engine = QueryEngine::new(store).unwrap();
+    let mut request = graph(&snapshot);
+    request.direction = Direction::Both;
+    request.max_edges = 2;
+    let result = engine.neighborhood(&request).unwrap();
+    assert_eq!(result.edges.len(), 2);
+    assert!(result.page.truncated);
+    assert_eq!(result.coverage.status, Status::Partial);
+}
+
+#[test]
 fn unknown_edges_and_missing_flows_never_claim_complete_answers() {
     let temp = tempfile::tempdir().unwrap();
     let store = Store::open(temp.path()).unwrap();

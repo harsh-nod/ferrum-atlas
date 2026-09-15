@@ -14,6 +14,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fs::{self, File};
 use std::io::{Read, Write};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -45,10 +46,26 @@ impl Store {
                 "SQLite 3.51.3 or newer is required".into(),
             ));
         }
-        fs::create_dir_all(path.as_ref())?;
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(path.as_ref())?;
         let root = fs::canonicalize(path)?;
         for name in ["shards", "sources", "staging"] {
-            fs::create_dir_all(root.join(name))?;
+            fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(root.join(name))?;
+        }
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(root.join("catalog.sqlite"))
+        {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error.into()),
         }
         let store = Self { root };
         let connection = store.connect()?;
@@ -108,6 +125,51 @@ impl Store {
             }
         }
         output.sort_by(|a: &Snapshot, b| a.id.cmp(&b.id));
+        Ok(output)
+    }
+
+    pub fn snapshots_scoped_bounded(
+        &self,
+        repositories: Option<&BTreeSet<RepositoryId>>,
+        max_count: usize,
+        max_bytes: usize,
+    ) -> Result<Vec<Snapshot>> {
+        let connection = self.connect()?;
+        let mut output = Vec::new();
+        let mut used_bytes = 2usize;
+        let mut append = |json: Option<String>| -> Result<()> {
+            let json = json.ok_or(Error::BudgetExhausted)?;
+            used_bytes = used_bytes.saturating_add(json.len() + 1);
+            if output.len() >= max_count || used_bytes > max_bytes {
+                return Err(Error::BudgetExhausted);
+            }
+            output.push(serde_json::from_str::<Snapshot>(&json)?);
+            Ok(())
+        };
+        if let Some(repositories) = repositories {
+            let mut statement = connection.prepare("SELECT CASE WHEN length(CAST(metadata AS BLOB))<=?2 THEN metadata ELSE NULL END FROM snapshots WHERE repository_id=?1 ORDER BY id LIMIT ?3")?;
+            for repository in repositories {
+                for row in statement.query_map(
+                    params![
+                        repository.0,
+                        max_bytes as i64,
+                        max_count.saturating_add(1) as i64
+                    ],
+                    |r| r.get::<_, Option<String>>(0),
+                )? {
+                    append(row?)?;
+                }
+            }
+        } else {
+            let mut statement = connection.prepare("SELECT CASE WHEN length(CAST(metadata AS BLOB))<=?1 THEN metadata ELSE NULL END FROM snapshots ORDER BY id LIMIT ?2")?;
+            for row in statement.query_map(
+                params![max_bytes as i64, max_count.saturating_add(1) as i64],
+                |r| r.get::<_, Option<String>>(0),
+            )? {
+                append(row?)?;
+            }
+        }
+        output.sort_by(|a, b| a.id.cmp(&b.id));
         Ok(output)
     }
 
@@ -208,7 +270,9 @@ impl Store {
                 r.get(0)
             })
             .optional()?;
-        if current.as_deref() != expected.map(|v| v.0.as_str()) {
+        if current.as_deref() != expected.map(|v| v.0.as_str())
+            && current.as_deref() != Some(id.0.as_str())
+        {
             return Err(Error::Conflict);
         }
         let existing: Option<String> = transaction
@@ -279,6 +343,14 @@ impl Store {
     }
 
     pub fn reader(&self, id: &SnapshotId) -> Result<SnapshotReader> {
+        self.reader_with_stop(id, &|| false)
+    }
+
+    pub fn reader_with_stop(
+        &self,
+        id: &SnapshotId,
+        stopped: &dyn Fn() -> bool,
+    ) -> Result<SnapshotReader> {
         let (metadata, hash): (String, String) = self
             .connect()?
             .query_row(
@@ -293,7 +365,7 @@ impl Store {
             return Err(Error::Unavailable("snapshot identity mismatch".into()));
         }
         let path = self.object_path("shards", &hash)?;
-        if checksum(&path)? != hash {
+        if checksum_with_stop(&path, stopped)? != hash {
             return Err(Error::Unavailable("shard checksum mismatch".into()));
         }
         SnapshotReader::open(self.clone(), snapshot, &path)
@@ -374,10 +446,17 @@ fn injected_failure(fail_after: Option<u8>, stage: u8) -> Result<()> {
 }
 
 fn checksum(path: &Path) -> Result<String> {
+    checksum_with_stop(path, &|| false)
+}
+
+fn checksum_with_stop(path: &Path, stopped: &dyn Fn() -> bool) -> Result<String> {
     let mut file = File::open(path)?;
     let mut hasher = Sha256::new();
     let mut buffer = [0u8; 64 * 1024];
     loop {
+        if stopped() {
+            return Err(Error::BudgetExhausted);
+        }
         let count = file.read(&mut buffer)?;
         if count == 0 {
             break;

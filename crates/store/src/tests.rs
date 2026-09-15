@@ -94,6 +94,7 @@ fn publication_is_deterministic_and_sources_are_exact() {
     reordered.definitions.reverse();
     let second = store.publish(&reordered, "main", Some(&first.id)).unwrap();
     assert_eq!(first, second);
+    assert_eq!(store.publish(&reordered, "main", None).unwrap(), first);
     assert_eq!(store.snapshots().unwrap().len(), 1);
     let reader = store.reader(&first.id).unwrap();
     assert_eq!(
@@ -120,6 +121,58 @@ fn publication_is_deterministic_and_sources_are_exact() {
         )
         .unwrap();
     assert_eq!(forward, reverse);
+}
+
+#[test]
+fn private_store_creation_and_bounded_snapshot_enumeration() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("private-store");
+    let store = Store::open(&root).unwrap();
+    assert_eq!(
+        fs::metadata(&root).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    assert_eq!(
+        fs::metadata(root.join("catalog.sqlite"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+    let first = store.publish(&batch("one"), "main", None).unwrap();
+    let _second = store
+        .publish(&batch("two"), "main", Some(&first.id))
+        .unwrap();
+    assert!(matches!(
+        store.snapshots_scoped_bounded(None, 1, 1024 * 1024),
+        Err(Error::BudgetExhausted)
+    ));
+    assert!(matches!(
+        store.snapshots_scoped_bounded(None, 1000, 10),
+        Err(Error::BudgetExhausted)
+    ));
+    assert_eq!(store.snapshots().unwrap().len(), 2);
+    assert!(
+        store
+            .snapshots_scoped_bounded(Some(&BTreeSet::new()), 0, 0)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(matches!(
+        store.reader_with_stop(&first.id, &|| true),
+        Err(Error::BudgetExhausted)
+    ));
+    assert!(store.reader(&first.id).is_ok());
+    let existing = temp.path().join("existing");
+    fs::create_dir(&existing).unwrap();
+    fs::set_permissions(&existing, fs::Permissions::from_mode(0o755)).unwrap();
+    Store::open(&existing).unwrap();
+    assert_eq!(
+        fs::metadata(existing).unwrap().permissions().mode() & 0o777,
+        0o755
+    );
 }
 
 #[test]
