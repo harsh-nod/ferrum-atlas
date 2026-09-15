@@ -6,6 +6,10 @@ Ferrum Atlas captures Rust source without running the workspace, resolves suppor
 
 This is a working local implementation of the included [design specification](rust_analyzer_and_visualizer.md), not completion of its entire multi-week roadmap. Compiler MIR, executable analysis, distributed hosting, fine-grained incremental updates, and large-corpus qualification remain open.
 
+![Ferrum Atlas showing source-linked calls from the captured Rust pilot](docs/images/explore-desktop.png)
+
+The [local implementation report](docs/milestones/local-slice.md) records passing CI, test coverage, reviewed fixes, screenshots, and the remaining acceptance gates.
+
 ## Run Locally
 
 Linux, Rust (pinned by `rust-toolchain.toml`), and Node.js 22.22.1 are required.
