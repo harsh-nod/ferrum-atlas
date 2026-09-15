@@ -20,16 +20,111 @@ use atlas_model::*;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
 use std::fs::{self, File};
 use std::io::{Read, Write};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[derive(Clone)]
 pub struct Store {
     root: PathBuf,
+}
+
+const VERIFIED_SHARDS: usize = 256;
+const MAX_SHARD_BYTES: u64 = 512 * 1024 * 1024;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FileIdentity {
+    device: u64,
+    inode: u64,
+    bytes: u64,
+    modified: (i64, i64),
+    changed: (i64, i64),
+    mode: u32,
+}
+
+impl FileIdentity {
+    fn of(file: &File) -> Result<Self> {
+        let metadata = file.metadata()?;
+        if !metadata.is_file() {
+            return Err(Error::Unavailable("shard is not a regular file".into()));
+        }
+        if metadata.len() > MAX_SHARD_BYTES {
+            return Err(Error::BudgetExhausted);
+        }
+        Ok(Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            bytes: metadata.len(),
+            modified: (metadata.mtime(), metadata.mtime_nsec()),
+            changed: (metadata.ctime(), metadata.ctime_nsec()),
+            mode: metadata.mode(),
+        })
+    }
+
+    fn at(directory: &File, hash: &str) -> Result<Self> {
+        let stat = rustix::fs::statat(directory, hash, rustix::fs::AtFlags::SYMLINK_NOFOLLOW)
+            .map_err(std::io::Error::from)?;
+        if rustix::fs::FileType::from_raw_mode(stat.st_mode) != rustix::fs::FileType::RegularFile {
+            return Err(Error::Unavailable("shard is not a regular file".into()));
+        }
+        let bytes = u64::try_from(stat.st_size).map_err(|_| Error::BudgetExhausted)?;
+        if bytes > MAX_SHARD_BYTES {
+            return Err(Error::BudgetExhausted);
+        }
+        Ok(Self {
+            device: stat.st_dev,
+            inode: stat.st_ino,
+            bytes,
+            modified: (stat.st_mtime, stat.st_mtime_nsec as i64),
+            changed: (stat.st_ctime, stat.st_ctime_nsec as i64),
+            mode: stat.st_mode,
+        })
+    }
+}
+
+#[derive(Default)]
+struct VerificationCache(VecDeque<(String, FileIdentity)>);
+
+impl VerificationCache {
+    fn contains(&self, hash: &str, identity: &FileIdentity) -> bool {
+        self.0
+            .iter()
+            .any(|(key, value)| key == hash && value == identity)
+    }
+
+    fn insert(&mut self, hash: &str, identity: FileIdentity) {
+        self.0
+            .retain(|(key, value)| key != hash || value != &identity);
+        while self.0.len() >= VERIFIED_SHARDS {
+            self.0.pop_front();
+        }
+        self.0.push_back((hash.into(), identity));
+    }
+}
+
+fn verification_cache() -> &'static Mutex<VerificationCache> {
+    static CACHE: OnceLock<Mutex<VerificationCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(VerificationCache::default()))
+}
+
+struct VerifiedShard {
+    file: File,
+    identity: FileIdentity,
+}
+
+impl VerifiedShard {
+    fn unchanged(&self) -> Result<()> {
+        if FileIdentity::of(&self.file)? != self.identity {
+            return Err(Error::Unavailable(
+                "shard changed after verification".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -291,6 +386,7 @@ impl Store {
         let final_path = self.object_path("shards", &shard_hash)?;
         persist_immutable(staged, &final_path, &shard_hash)?;
         self.register_object("shards", &shard_hash)?;
+        self.verified_shard(&shard_hash, &|| false)?;
         injected_failure(fail_after, 2)?;
         let mut connection = self.connect()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -382,6 +478,77 @@ impl Store {
         self.reader_with_stop(id, &|| false)
     }
 
+    fn shard_directory(&self) -> Result<File> {
+        use rustix::fs::{Mode, OFlags, open, openat};
+        let root = open(
+            &self.root,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(std::io::Error::from)?;
+        let directory = openat(
+            root,
+            "shards",
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(std::io::Error::from)?;
+        Ok(directory.into())
+    }
+
+    fn open_shard(&self, hash: &str) -> Result<File> {
+        use rustix::fs::{Mode, OFlags, openat};
+        self.object_path("shards", hash)?;
+        let file = openat(
+            self.shard_directory()?,
+            hash,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(std::io::Error::from)?;
+        Ok(file.into())
+    }
+
+    fn shard_identity(&self, hash: &str) -> Result<FileIdentity> {
+        self.object_path("shards", hash)?;
+        FileIdentity::at(&self.shard_directory()?, hash)
+    }
+
+    fn verified_shard(&self, hash: &str, stopped: &dyn Fn() -> bool) -> Result<VerifiedShard> {
+        if stopped() {
+            return Err(Error::BudgetExhausted);
+        }
+        let mut file = self.open_shard(hash)?;
+        let identity = FileIdentity::of(&file)?;
+        // Cache only completed hashes of unchanged local filesystem objects. Never
+        // hold the process-wide mutex during I/O or wait for a contended cache.
+        let cached = verification_cache()
+            .try_lock()
+            .is_ok_and(|cache| cache.contains(hash, &identity));
+        if !cached {
+            if checksum_file_with_stop(&mut file, stopped)? != hash {
+                return Err(Error::Unavailable("shard checksum mismatch".into()));
+            }
+            if FileIdentity::of(&file)? != identity {
+                return Err(Error::Unavailable(
+                    "shard changed during verification".into(),
+                ));
+            }
+        }
+        if stopped() {
+            return Err(Error::BudgetExhausted);
+        }
+        if self.shard_identity(hash)? != identity {
+            return Err(Error::Unavailable(
+                "shard replaced during verification".into(),
+            ));
+        }
+        if !cached && let Ok(mut cache) = verification_cache().try_lock() {
+            cache.insert(hash, identity.clone());
+        }
+        Ok(VerifiedShard { file, identity })
+    }
+
     pub fn reader_with_stop(
         &self,
         id: &SnapshotId,
@@ -411,10 +578,13 @@ impl Store {
             return Err(Error::Unavailable("snapshot identity mismatch".into()));
         }
         let path = self.object_path("shards", &hash)?;
-        if checksum_with_stop(&path, stopped)? != hash {
-            return Err(Error::Unavailable("shard checksum mismatch".into()));
+        let verified = self.verified_shard(&hash, stopped)?;
+        let reader = SnapshotReader::open(self.clone(), snapshot, &path, lease, verified)?;
+        if stopped() {
+            return Err(Error::BudgetExhausted);
         }
-        SnapshotReader::open(self.clone(), snapshot, &path, lease)
+        reader.check_identity()?;
+        Ok(reader)
     }
 
     pub fn integrity_check(&self) -> Result<IntegrityReport> {
@@ -470,6 +640,10 @@ fn checksum(path: &Path) -> Result<String> {
 
 fn checksum_with_stop(path: &Path, stopped: &dyn Fn() -> bool) -> Result<String> {
     let mut file = File::open(path)?;
+    checksum_file_with_stop(&mut file, stopped)
+}
+
+fn checksum_file_with_stop(file: &mut File, stopped: &dyn Fn() -> bool) -> Result<String> {
     let mut hasher = Sha256::new();
     let mut buffer = [0u8; 64 * 1024];
     loop {

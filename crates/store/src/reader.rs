@@ -1,13 +1,15 @@
-use crate::{Error, Result, Store};
+use crate::{Error, Result, Store, VerifiedShard};
 use atlas_model::*;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use serde::de::DeserializeOwned;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub struct SnapshotReader {
     store: Store,
     pub snapshot: Snapshot,
     connection: Connection,
+    shard_path: PathBuf,
+    verified: VerifiedShard,
     _lease: Option<std::fs::File>,
 }
 
@@ -78,10 +80,13 @@ impl SnapshotReader {
         snapshot: Snapshot,
         path: &Path,
         lease: Option<std::fs::File>,
+        verified: VerifiedShard,
     ) -> Result<Self> {
         let connection = Connection::open_with_flags(
             path,
-            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_NOFOLLOW,
         )?;
         connection.execute_batch("PRAGMA query_only=ON; PRAGMA trusted_schema=OFF;")?;
         let version: u32 = connection.pragma_query_value(None, "user_version", |r| r.get(0))?;
@@ -101,12 +106,33 @@ impl SnapshotReader {
         if fact_digest != snapshot.fact_digest || context != snapshot.context.id.0 {
             return Err(Error::Unavailable("shard manifest mismatch".into()));
         }
-        Ok(Self {
+        let reader = Self {
             store,
             snapshot,
             connection,
+            shard_path: path.to_path_buf(),
+            verified,
             _lease: lease,
-        })
+        };
+        reader.check_identity()?;
+        Ok(reader)
+    }
+
+    pub(crate) fn check_identity(&self) -> Result<()> {
+        self.verified.unchanged()?;
+        let hash = self
+            .shard_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| Error::Unavailable("invalid shard path".into()))?;
+        // statat avoids opening/closing another database descriptor, which can
+        // release process-associated SQLite POSIX locks on the same inode.
+        if self.store.shard_identity(hash)? != self.verified.identity {
+            return Err(Error::Unavailable(
+                "shard replaced after verification".into(),
+            ));
+        }
+        Ok(())
     }
 
     pub fn progress_handler(&self, callback: impl FnMut() -> bool + Send + 'static) -> Result<()> {
@@ -115,6 +141,7 @@ impl SnapshotReader {
     }
 
     pub fn verify(&self) -> Result<()> {
+        self.check_identity()?;
         let result: String = self
             .connection
             .query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
@@ -151,6 +178,7 @@ impl SnapshotReader {
     }
 
     fn one<T: DeserializeOwned>(&self, sql: &str, id: &str) -> Result<Option<T>> {
+        self.check_identity()?;
         self.connection
             .query_row(sql, [id], |r| r.get::<_, String>(0))
             .optional()?
@@ -164,6 +192,7 @@ impl SnapshotReader {
         after: Option<(&str, &str)>,
         limit: usize,
     ) -> Result<Vec<Definition>> {
+        self.check_identity()?;
         let upper = format!("{prefix}\u{10ffff}");
         let (after_name, after_id) = after.unwrap_or(("", ""));
         let mut statement = self.connection.prepare("SELECT payload FROM definitions WHERE name_key>=?1 AND name_key<?2 AND (name_key,id)>(?3,?4) ORDER BY name_key,id LIMIT ?5")?;
@@ -184,6 +213,7 @@ impl SnapshotReader {
     }
 
     pub fn definitions_bounded(&self, limit: usize, max_bytes: usize) -> Result<Vec<Definition>> {
+        self.check_identity()?;
         let mut statement = self
             .connection
             .prepare("SELECT payload FROM definitions ORDER BY id LIMIT ?1")?;
@@ -199,6 +229,7 @@ impl SnapshotReader {
         direction: &Direction,
         limit: usize,
     ) -> Result<Vec<Relation>> {
+        self.check_identity()?;
         let sql = match direction {
             Direction::Incoming => {
                 "SELECT payload FROM relations WHERE target_id=?1 AND kind='calls' ORDER BY kind,source_id,id LIMIT ?2"
@@ -219,6 +250,7 @@ impl SnapshotReader {
     }
 
     pub fn definition_evidence(&self, id: &DefinitionId, limit: usize) -> Result<Vec<Evidence>> {
+        self.check_identity()?;
         let mut statement = self.connection.prepare("SELECT e.payload FROM evidence e WHERE e.id IN (SELECT DISTINCT evidence_id FROM relations WHERE source_id=?1 ORDER BY evidence_id LIMIT ?2) ORDER BY e.id LIMIT ?2")?;
         collect(
             statement.query_map(params![id.0, limit.min(1001) as u32], |r| {
@@ -228,6 +260,7 @@ impl SnapshotReader {
     }
 
     pub fn flow(&self, id: &DefinitionId, phase: &str) -> Result<Option<FunctionFlow>> {
+        self.check_identity()?;
         self.connection
             .query_row(
                 "SELECT payload FROM flows WHERE definition_id=?1 AND phase=?2",
@@ -240,6 +273,7 @@ impl SnapshotReader {
     }
 
     pub fn files(&self) -> Result<Vec<SourceFile>> {
+        self.check_identity()?;
         let mut statement = self
             .connection
             .prepare("SELECT id,path,content_hash FROM files ORDER BY id")?;
@@ -256,6 +290,7 @@ impl SnapshotReader {
     }
 
     pub fn source(&self, id: &FileId) -> Result<Option<SourceFile>> {
+        self.check_identity()?;
         let Some(mut file) = self
             .connection
             .query_row(
@@ -313,3 +348,6 @@ fn collect_bounded<T: DeserializeOwned>(
     })
     .collect()
 }
+
+#[cfg(test)]
+mod tests;
