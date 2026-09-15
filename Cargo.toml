@@ -1,0 +1,46 @@
+[workspace]
+members = ["crates/model", "crates/ingest", "crates/frontend-ra", "crates/store", "crates/query", "crates/server", "crates/cli", "xtask"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.95"
+repository = "https://github.com/harsh-nod/ferrum-atlas"
+
+[workspace.dependencies]
+atlas-model = { path = "crates/model" }
+atlas-ingest = { path = "crates/ingest" }
+atlas-frontend = { path = "crates/frontend-ra" }
+atlas-store = { path = "crates/store" }
+atlas-query = { path = "crates/query" }
+atlas-server = { path = "crates/server" }
+anyhow = "=1.0.104"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+sha2 = "=0.10.9"
+toml = "=1.1.5"
+ts-rs = "=11.1.0"
+axum = "=0.8.4"
+tokio = { version = "=1.47.1", features = ["full"] }
+tower = { version = "=0.5.2", features = ["util"] }
+tower-http = { version = "=0.6.11", features = ["fs", "limit", "set-header"] }
+clap = { version = "=4.6.6", features = ["derive"] }
+rusqlite = { version = "=0.38.0", features = ["bundled"] }
+tempfile = "=3.27.0"
+ra_ap_syntax = "=0.0.349"
+ra_ap_hir = "=0.0.349"
+ra_ap_ide_db = "=0.0.349"
+ra_ap_base_db = "=0.0.349"
+ra_ap_cfg = "=0.0.349"
+ra_ap_vfs = "=0.0.349"
+ra_ap_span = "=0.0.349"
+
+[profile.dev]
+debug = 0
+incremental = false
+
+[profile.test]
+debug = 0
+incremental = false

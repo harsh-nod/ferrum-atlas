@@ -1,0 +1,18 @@
+[package]
+name = "atlas-frontend"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+[dependencies]
+atlas-model.workspace = true
+anyhow.workspace = true
+ra_ap_syntax.workspace = true
+ra_ap_hir.workspace = true
+ra_ap_ide_db.workspace = true
+ra_ap_base_db.workspace = true
+ra_ap_cfg.workspace = true
+ra_ap_vfs.workspace = true
+ra_ap_span.workspace = true
+[dev-dependencies]
+atlas-ingest.workspace = true
+tempfile.workspace = true

@@ -1,0 +1,13 @@
+[package]
+name = "atlas-query"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+[dependencies]
+atlas-model.workspace = true
+atlas-store.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+[dev-dependencies]
+tempfile.workspace = true

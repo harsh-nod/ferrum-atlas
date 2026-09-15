@@ -1,0 +1,22 @@
+[package]
+name = "ferrum-atlas"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+[[bin]]
+name = "atlas"
+path = "src/main.rs"
+[dependencies]
+atlas-model.workspace = true
+atlas-ingest.workspace = true
+atlas-frontend.workspace = true
+atlas-store.workspace = true
+atlas-query.workspace = true
+atlas-server.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+clap.workspace = true
+tokio.workspace = true
+[dev-dependencies]
+tempfile.workspace = true
