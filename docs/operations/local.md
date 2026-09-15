@@ -33,7 +33,7 @@ Source capture does not execute Cargo, rustc wrappers, build scripts or proc mac
 
 ## Limits and Failures
 
-Indexing runs in a subprocess with a cleared environment, address-space/CPU/output-file limits, and a parent wall-clock timeout. Defaults are 120 seconds, 8192 MiB address space, and 256 MiB output. The worker only reads source; this is resource containment, not a hostile executable-code sandbox. Failed workers never publish a new head. Adjust supported budgets through CLI flags.
+Indexing runs in a subprocess with a cleared environment, address-space/CPU/output-file limits, and a parent wall-clock timeout. Defaults are 120 seconds, 8192 MiB address space, and 256 MiB output. The Linux worker sets a parent-death signal, checks the parent identity, and applies resource limits before initializing the analyzer. Error paths kill and reap unfinished workers. The worker only reads source; this is resource containment, not a hostile executable-code sandbox. Failed workers never publish a new head. Adjust supported budgets through CLI flags.
 
 The default store quota is 4096 MiB. Ingestion pauses at 80% existing usage; estimated publication growth is rejected at 90%. This is conservative admission accounting, not an OS disk quota. Concurrent publishers and filesystem overhead can still consume additional space. Preserve recovery headroom.
 
@@ -44,6 +44,18 @@ The default store quota is 4096 MiB. Ingestion pauses at 80% existing usage; est
 Stop writers, then stop the local viewer and copy the entire store, including the catalog and its WAL/SHM sidecars if present. Do not copy only the database while a writer is active. Restore into a fresh directory, run `atlas --store RESTORED doctor`, then answer the same pinned symbol/source query. The catalog and referenced immutable objects are one backup unit. No in-place schema migration is supported; retain the original store when rebuilding with a new schema.
 
 `atlas export` writes a pinned symbol/evidence manifest. Its JSON explicitly lists omitted source, relation, trace and active-query capabilities. It is not a complete offline index backup.
+
+## Imported Observations
+
+```sh
+atlas import-evidence --snapshot snapshot:... --bundle observations.json --artifact path/to/executable
+```
+
+The artifact is read and hashed, never executed. The JSON must follow `ObservationBundle` in the generated API contract and match the selected source/context and actual artifact SHA-256. Any definition mapping must belong to that snapshot. Import does not independently prove who produced a trace or whether a claimed test actually ran: the producer and bundle remain user-supplied evidence. Static call facts do not change when observations are imported.
+
+Bundles are capped at 2 MiB, 1,000 test records, 64 streams and 10,000 events. Each snapshot holds up to 50 deduplicated bundles; a per-snapshot filesystem lock serializes admission and publication. Window queries return at most 200 records. Unknown mappings may be omitted, while an explicit wrong mapping is rejected. A timeout must record its timeout cap. Device/thread identifiers, clock domains, units, sequence and loss counters survive import; independent clocks are never silently merged.
+
+The Evidence view displays these separate observations. Back up its `observations/` directory with the rest of the store. `doctor` validates static snapshot storage; observation checksums are validated when observations are read, not by `doctor`.
 
 ## Qualification
 

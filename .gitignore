@@ -4,5 +4,6 @@
 /web/test-results/
 /web/playwright-report/
 /.atlas/
+/.atlas-*/
 *.log
 .DS_Store

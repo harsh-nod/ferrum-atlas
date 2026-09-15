@@ -1,0 +1,125 @@
+{
+  "cache": "uncontrolled local cache; first sample retained",
+  "hardware": {
+    "arch": "x86_64",
+    "logical_cpus": 32,
+    "os": "linux"
+  },
+  "limitations": [
+    "Smoke measurement only; no L/S/O qualification, cold-cache claim, or p99 inference."
+  ],
+  "p50_ms": 7.521656,
+  "p95_ms": 10.764671,
+  "samples_ms": [
+    7.317658000000001,
+    8.051385,
+    7.014811,
+    6.108838,
+    6.763834,
+    8.234379,
+    7.009017,
+    10.042532999999999,
+    10.480059,
+    12.254147,
+    8.645264999999998,
+    7.2564090000000006,
+    5.8099739999999995,
+    7.521656,
+    5.79262,
+    7.082368000000001,
+    8.668548999999999,
+    10.764671,
+    8.081354000000001,
+    9.692404,
+    8.022523,
+    8.795134,
+    6.557314,
+    8.189148,
+    8.649452,
+    7.291568,
+    8.283664,
+    7.377047999999999,
+    6.989799,
+    6.294642
+  ],
+  "snapshot": {
+    "context": {
+      "cfg": {},
+      "coverage": {
+        "limitations": [
+          "Manifest-only discovery does not load a sysroot, run Cargo feature resolution, build scripts, or procedural macros."
+        ],
+        "reasons": [
+          {
+            "count": 1,
+            "reason": "missing_dependency"
+          }
+        ],
+        "status": "partial"
+      },
+      "crates": [
+        {
+          "dependencies": {},
+          "edition": "2021",
+          "name": "pilot_helper",
+          "root_file": "helper/src/lib.rs"
+        },
+        {
+          "dependencies": {
+            "math": "helper/src/lib.rs"
+          },
+          "edition": "2021",
+          "name": "atlas_pilot",
+          "root_file": "src/lib.rs"
+        }
+      ],
+      "default_features": true,
+      "features": [],
+      "id": "context:164a53e616cbd47aa52faa646f1d12a287f5a9217a3a2c11013065103cce3112",
+      "manifest_digest": "manifests:31764ea0db011162c67cf75ecc48b4c6ea288bfc4f796bf5c2652334ebf12fd9",
+      "name": "default",
+      "target": "unknown",
+      "trust": "read_only"
+    },
+    "coverage": {
+      "limitations": [
+        "Macro invocations are recorded without extracting expanded output.",
+        "Manifest-only discovery does not load a sysroot, run Cargo feature resolution, build scripts, or procedural macros.",
+        "Source-level extraction excludes implicit drops, compiler lowering, macro expansions, and runtime dispatch targets.",
+        "Unresolved assert_eq!: MacroUnavailable",
+        "Unresolved operation: IndirectTargetUnknown"
+      ],
+      "reasons": [
+        {
+          "count": 1,
+          "reason": "missing_dependency"
+        },
+        {
+          "count": 6,
+          "reason": "macro_unavailable"
+        },
+        {
+          "count": 1,
+          "reason": "indirect_target_unknown"
+        },
+        {
+          "count": 1,
+          "reason": "unsupported_construct"
+        }
+      ],
+      "status": "partial"
+    },
+    "created_at": "1789444356",
+    "definition_count": 7,
+    "fact_digest": "facts:5615a91642605b20dccdd35f7f6ba2c6e1a8998a0da172b467fc1cf441e0efc7",
+    "file_count": 4,
+    "id": "analysis:5ed2f5039eedc8f906b8184d0beea8934c30c4ce6e54ee14c5e59ee5c1735652",
+    "producer": "rust-analyzer/0.0.349;atlas-adapter/1",
+    "relation_count": 7,
+    "repository_id": "repository:de55a638712d4c7df517cf28465dabb39c2e723b83f4263d2b9381d3cc636658",
+    "revision": "working-tree 25cea554bc47",
+    "source_id": "source:25cea554bc473330bf91aa020aeb9520de4f4ae74d6e9751918d90d231fdf369"
+  },
+  "version": 1,
+  "workload": "local symbol search, top 50"
+}

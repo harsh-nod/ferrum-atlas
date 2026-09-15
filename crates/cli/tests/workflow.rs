@@ -155,6 +155,59 @@ fn body_edit_has_a_pinned_before_after_diff() {
 }
 
 #[test]
+fn evidence_import_requires_the_exact_artifact_and_preserves_static_facts() {
+    let project = Project::new();
+    project.init();
+    let snapshot = project.index("semantic");
+    let search = project.run(&["query", "search", "--text", "entry"]);
+    let definition = &search["items"][0]["id"];
+    let artifact = project.temp.path().join("artifact");
+    fs::write(&artifact, b"controlled test artifact; never executed").unwrap();
+    let bundle = project.temp.path().join("observations.json");
+    let content = serde_json::json!({
+        "schema_version": 1,
+        "snapshot_id": snapshot["id"],
+        "artifact": {
+            "sha256": atlas_evidence::artifact_sha256(&artifact).unwrap(),
+            "source_id": snapshot["source_id"],
+            "context_id": snapshot["context"]["id"],
+            "producer": "controlled-import-fixture"
+        },
+        "tests": [{
+            "name": "entry", "outcome": "timeout", "elapsed_ns": "9007199254740993",
+            "timeout_ns": "1000000000", "reason": "fixture timeout", "definition_ids": [definition]
+        }],
+        "streams": [{
+            "id": "cpu0", "process_or_device": "fixture", "thread_or_hart": "0",
+            "clock_domain": "fixture-clock", "timestamp_unit": "ns",
+            "events": [{"sequence": "1", "timestamp": "9007199254740993", "kind": "enter",
+                "definition_id": definition, "correlation_id": null, "loss_count": "0"}]
+        }],
+        "limitations": ["Controlled test observation; not a real executable trace"]
+    });
+    fs::write(&bundle, serde_json::to_vec(&content).unwrap()).unwrap();
+    let args = [
+        "import-evidence",
+        "--snapshot",
+        snapshot["id"].as_str().unwrap(),
+        "--bundle",
+        bundle.to_str().unwrap(),
+        "--artifact",
+        artifact.to_str().unwrap(),
+    ];
+    let imported = project.run(&args);
+    assert_eq!(imported["test_count"], 1);
+    assert_eq!(imported["event_count"], 1);
+    assert_eq!(project.run(&args)["id"], imported["id"]);
+    fs::write(&artifact, b"different artifact").unwrap();
+    assert!(!project.command(&args).status.success());
+    assert_eq!(
+        project.run(&["snapshots"])[0]["fact_digest"],
+        snapshot["fact_digest"]
+    );
+}
+
+#[test]
 fn opening_and_indexing_never_runs_workspace_build_scripts() {
     let project = Project::new();
     let root = Path::new(&project.root()).to_owned();
