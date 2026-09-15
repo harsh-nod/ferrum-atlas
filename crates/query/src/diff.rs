@@ -177,6 +177,19 @@ impl QueryEngine {
                 "Diff reached a definition, change, caller, time, or response byte budget",
             );
         }
+        let mut reasons = BTreeMap::<UnknownReason, u32>::new();
+        for entry in std::mem::take(&mut coverage.reasons) {
+            let count = reasons.entry(entry.reason).or_default();
+            *count = count.saturating_add(entry.count);
+        }
+        coverage.reasons = reasons
+            .into_iter()
+            .map(|(reason, count)| ReasonCount { reason, count })
+            .collect();
+        let mut limitations = BTreeSet::new();
+        coverage
+            .limitations
+            .retain(|limitation| limitations.insert(limitation.clone()));
         bounded(DiffResponse {
             before: before.id,
             after: after.id,

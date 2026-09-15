@@ -579,3 +579,75 @@ fn diff_marks_truncated_callsite_postings_even_with_duplicate_callers() {
             .any(|entry| entry.reason == UnknownReason::BudgetExhausted)
     );
 }
+
+#[test]
+fn diff_normalizes_coverage_counts_without_overflow_and_deduplicates_limitations() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = Store::open(temp.path()).unwrap();
+    let mut facts = batch(1);
+    facts.coverage = Coverage {
+        status: Status::Partial,
+        reasons: vec![
+            ReasonCount {
+                reason: UnknownReason::CfgUnknown,
+                count: u32::MAX - 1,
+            },
+            ReasonCount {
+                reason: UnknownReason::SyntaxOnly,
+                count: 2,
+            },
+            ReasonCount {
+                reason: UnknownReason::SyntaxOnly,
+                count: 3,
+            },
+        ],
+        limitations: vec!["Shared limitation".into(), "Shared limitation".into()],
+    };
+    let before = store.publish(&facts, "main", None).unwrap();
+    facts.coverage.reasons = vec![
+        ReasonCount {
+            reason: UnknownReason::CfgUnknown,
+            count: 9,
+        },
+        ReasonCount {
+            reason: UnknownReason::SyntaxOnly,
+            count: 4,
+        },
+        ReasonCount {
+            reason: UnknownReason::MissingDependency,
+            count: 7,
+        },
+    ];
+    facts.coverage.limitations = vec!["Shared limitation".into(), "After limitation".into()];
+    let after = store.publish(&facts, "main", Some(&before.id)).unwrap();
+    let engine = QueryEngine::new(store).unwrap();
+    let result = engine
+        .diff(&DiffRequest {
+            before: before.id,
+            after: after.id,
+        })
+        .unwrap();
+    assert_eq!(result.coverage.status, Status::Partial);
+    assert_eq!(
+        result.coverage.reasons,
+        vec![
+            ReasonCount {
+                reason: UnknownReason::MissingDependency,
+                count: 7,
+            },
+            ReasonCount {
+                reason: UnknownReason::CfgUnknown,
+                count: u32::MAX,
+            },
+            ReasonCount {
+                reason: UnknownReason::SyntaxOnly,
+                count: 9,
+            },
+        ]
+    );
+    assert_eq!(result.coverage.limitations.len(), 3);
+    assert_eq!(result.coverage.limitations[0], "Shared limitation");
+    assert_eq!(result.coverage.limitations[1], "After limitation");
+    assert!(!result.truncated);
+    assert!(result.changes.is_empty());
+}
