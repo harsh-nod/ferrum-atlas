@@ -5,14 +5,204 @@ use atlas_model::*;
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeSet,
-    fs::{self, File},
+    ffi::OsStr,
+    fs::File,
     io::{Read, Write},
-    path::{Path, PathBuf},
+    os::{
+        fd::AsRawFd,
+        unix::{ffi::OsStrExt, fs::MetadataExt},
+    },
+    path::{Component, Path, PathBuf},
+    time::{Duration, Instant},
 };
 
 const MAX_BUNDLE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_EVENTS: usize = 10_000;
 const MAX_BUNDLES: usize = 50;
+const MAX_DIRECTORY_ENTRIES: usize = 128;
+const IMPORT_LOCK_TIMEOUT: Duration = Duration::from_secs(2);
+
+#[cfg(test)]
+use std::fs;
+
+struct ScopedDirectory(File);
+
+impl ScopedDirectory {
+    fn open(path: &Path, create: bool) -> Result<Option<Self>> {
+        use rustix::fs::{Mode, OFlags, mkdirat, open, openat};
+        ensure!(
+            path.as_os_str().len() <= 4096 && path.components().count() <= 256,
+            "evidence directory path exceeds budget"
+        );
+        let flags = OFlags::RDONLY
+            | OFlags::DIRECTORY
+            | OFlags::NOFOLLOW
+            | OFlags::NONBLOCK
+            | OFlags::CLOEXEC;
+        let mut directory = File::from(open(
+            if path.is_absolute() { "/" } else { "." },
+            flags,
+            Mode::empty(),
+        )?);
+        for component in path.components() {
+            let name = match component {
+                Component::RootDir | Component::CurDir => continue,
+                Component::Normal(name) => name,
+                Component::ParentDir => OsStr::new(".."),
+                Component::Prefix(_) => anyhow::bail!("unsupported evidence directory prefix"),
+            };
+            let next = match openat(&directory, name, flags, Mode::empty()) {
+                Ok(next) => next,
+                Err(rustix::io::Errno::NOENT) if !create => return Ok(None),
+                Err(rustix::io::Errno::NOENT) => {
+                    match mkdirat(&directory, name, Mode::RWXU) {
+                        Ok(()) => directory.sync_all()?,
+                        Err(rustix::io::Errno::EXIST) => (),
+                        Err(error) => return Err(error.into()),
+                    }
+                    openat(&directory, name, flags, Mode::empty())?
+                }
+                Err(error) => return Err(error.into()),
+            };
+            directory = File::from(next);
+        }
+        Ok(Some(Self(directory)))
+    }
+
+    fn child(name: &Path) -> Result<()> {
+        let mut components = name.components();
+        ensure!(
+            matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none(),
+            "invalid evidence object name"
+        );
+        Ok(())
+    }
+
+    fn exists(&self, name: &Path) -> Result<bool> {
+        Self::child(name)?;
+        match rustix::fs::statat(&self.0, name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW) {
+            Ok(_) => Ok(true),
+            Err(rustix::io::Errno::NOENT) => Ok(false),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn read(&self, name: &Path, max_bytes: u64) -> Result<Vec<u8>> {
+        use rustix::fs::{Mode, OFlags, openat};
+        Self::child(name)?;
+        let file = File::from(openat(
+            &self.0,
+            name,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::empty(),
+        )?);
+        let metadata = file.metadata()?;
+        ensure!(metadata.is_file(), "evidence object must be a regular file");
+        ensure!(
+            metadata.len() <= max_bytes,
+            "evidence object exceeds byte budget"
+        );
+        let mut bytes = Vec::new();
+        file.take(max_bytes + 1).read_to_end(&mut bytes)?;
+        ensure!(
+            bytes.len() as u64 <= max_bytes,
+            "evidence object grew beyond byte budget"
+        );
+        Ok(bytes)
+    }
+
+    fn json_names(&self, max_objects: usize) -> Result<Vec<PathBuf>> {
+        let mut names = Vec::new();
+        let mut count = 0;
+        for entry in rustix::fs::Dir::read_from(&self.0)? {
+            let entry = entry?;
+            let name = entry.file_name().to_bytes();
+            if name == b"." || name == b".." {
+                continue;
+            }
+            count += 1;
+            ensure!(
+                count <= MAX_DIRECTORY_ENTRIES,
+                "evidence directory entry budget exceeded"
+            );
+            let name = Path::new(OsStr::from_bytes(name));
+            if name
+                .extension()
+                .is_some_and(|extension| extension == "json")
+            {
+                names.push(name.to_owned());
+                ensure!(
+                    names.len() <= max_objects,
+                    "snapshot evidence object limit exceeded"
+                );
+            }
+        }
+        names.sort();
+        Ok(names)
+    }
+
+    fn import_lock(&self) -> Result<File> {
+        use rustix::fs::{FlockOperation, Mode, OFlags, fchmod, flock, openat};
+        let lock = File::from(openat(
+            &self.0,
+            ".import.lock",
+            OFlags::RDWR | OFlags::CREATE | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::RUSR | Mode::WUSR,
+        )?);
+        let metadata = lock.metadata()?;
+        ensure!(
+            metadata.is_file() && metadata.len() == 0 && metadata.nlink() == 1,
+            "import lock must be a regular, empty, singly-linked private file"
+        );
+        ensure!(
+            metadata.uid() == self.0.metadata()?.uid(),
+            "import lock owner differs from its scope"
+        );
+        fchmod(&lock, Mode::RUSR | Mode::WUSR)?;
+        let deadline = Instant::now() + IMPORT_LOCK_TIMEOUT;
+        loop {
+            match flock(&lock, FlockOperation::NonBlockingLockExclusive) {
+                Ok(()) => return Ok(lock),
+                Err(rustix::io::Errno::WOULDBLOCK) | Err(rustix::io::Errno::INTR) => {
+                    ensure!(
+                        Instant::now() < deadline,
+                        "evidence import lock deadline exceeded"
+                    );
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+
+    fn publish(&self, name: &Path, bytes: &[u8]) -> Result<bool> {
+        Self::child(name)?;
+        // This kernel-owned path names the held descriptor, never the mutable user path.
+        let pinned = PathBuf::from(format!("/proc/self/fd/{}", self.0.as_raw_fd()));
+        let mut temporary = tempfile::Builder::new()
+            .prefix(".import-")
+            .tempfile_in(pinned)?;
+        temporary.write_all(bytes)?;
+        temporary.as_file().sync_all()?;
+        match rustix::fs::renameat_with(
+            &self.0,
+            temporary
+                .path()
+                .file_name()
+                .context("temporary object has no name")?,
+            &self.0,
+            name,
+            rustix::fs::RenameFlags::NOREPLACE,
+        ) {
+            Ok(()) => {
+                self.0.sync_all()?;
+                Ok(true)
+            }
+            Err(rustix::io::Errno::EXIST) => Ok(false),
+            Err(error) => Err(error.into()),
+        }
+    }
+}
 
 fn scope(root: &Path, snapshot: &SnapshotId) -> PathBuf {
     root.join(digest("observations", snapshot).split_once(':').unwrap().1)
@@ -215,47 +405,29 @@ fn persist_bundle(
     bundle: &ObservationBundle,
     snapshot: &Snapshot,
 ) -> Result<ObservationSummary> {
-    let folder = scope(root, &snapshot.id);
-    fs::create_dir_all(&folder)?;
-    use std::os::unix::fs::OpenOptionsExt;
-    let lock = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .open(folder.join(".import.lock"))?;
-    rustix::fs::flock(&lock, rustix::fs::FlockOperation::LockExclusive)?;
+    let folder = ScopedDirectory::open(&scope(root, &snapshot.id), true)?
+        .context("evidence scope unavailable")?;
+    let _lock = folder.import_lock()?;
     let id = digest("observation", bundle);
-    let destination = folder.join(format!("{}.json", id.split_once(':').unwrap().1));
-    if destination.exists() {
+    let destination = PathBuf::from(format!("{}.json", id.split_once(':').unwrap().1));
+    let names = folder.json_names(MAX_BUNDLES)?;
+    if folder.exists(&destination)? {
         ensure!(
-            read_bundle(&destination)?.0 == id,
+            read_bundle(&folder, &destination)?.0 == id,
             "stored observation is corrupt"
         );
         return Ok(summary(&id, bundle));
     }
-    let mut count = 0;
-    for entry in fs::read_dir(&folder)? {
-        if entry?.path().extension().is_some_and(|v| v == "json") {
-            count += 1;
-        }
-        ensure!(count < MAX_BUNDLES, "snapshot observation limit reached");
+    ensure!(
+        names.len() < MAX_BUNDLES,
+        "snapshot observation limit reached"
+    );
+    if !folder.publish(&destination, &serde_json::to_vec(bundle)?)? {
+        ensure!(
+            read_bundle(&folder, &destination)?.0 == id,
+            "stored observation is corrupt"
+        );
     }
-    let mut temp = tempfile::NamedTempFile::new_in(&folder)?;
-    temp.write_all(&serde_json::to_vec(bundle)?)?;
-    temp.as_file().sync_all()?;
-    match temp.persist_noclobber(&destination) {
-        Ok(_) => (),
-        Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
-            ensure!(
-                read_bundle(&destination)?.0 == id,
-                "stored observation is corrupt"
-            );
-        }
-        Err(error) => return Err(error.error.into()),
-    }
-    File::open(folder)?.sync_all()?;
     Ok(summary(&id, bundle))
 }
 
@@ -268,7 +440,9 @@ pub fn load(root: &Path, snapshot: &SnapshotId, id: &str) -> Result<ObservationB
         suffix.len() == 64 && suffix.bytes().all(|b| b.is_ascii_hexdigit()),
         "invalid observation ID"
     );
-    let (_, bundle) = read_bundle(&scope(root, snapshot).join(format!("{suffix}.json")))?;
+    let folder = ScopedDirectory::open(&scope(root, snapshot), false)?
+        .context("observation scope unavailable")?;
+    let (_, bundle) = read_bundle(&folder, Path::new(&format!("{suffix}.json")))?;
     ensure!(
         &bundle.snapshot_id == snapshot,
         "observation snapshot mismatch"
@@ -276,50 +450,29 @@ pub fn load(root: &Path, snapshot: &SnapshotId, id: &str) -> Result<ObservationB
     Ok(bundle)
 }
 
-fn read_bundle(path: &Path) -> Result<(String, ObservationBundle)> {
-    ensure!(
-        path.symlink_metadata()?.is_file(),
-        "observation object must be a regular file"
-    );
-    let file = File::open(path)?;
-    ensure!(
-        file.metadata()?.len() <= MAX_BUNDLE_BYTES,
-        "observation object exceeds 2 MiB"
-    );
-    let bundle: ObservationBundle = serde_json::from_reader(file.take(MAX_BUNDLE_BYTES + 1))?;
+fn read_bundle(folder: &ScopedDirectory, name: &Path) -> Result<(String, ObservationBundle)> {
+    let bundle: ObservationBundle = serde_json::from_slice(&folder.read(name, MAX_BUNDLE_BYTES)?)?;
     ensure!(
         bundle.schema_version == SCHEMA_VERSION,
         "unsupported observation schema"
     );
     let id = digest("observation", &bundle);
     ensure!(
-        path.file_stem().and_then(|n| n.to_str()) == id.split_once(':').map(|(_, v)| v),
+        name.file_stem().and_then(|n| n.to_str()) == id.split_once(':').map(|(_, v)| v),
         "observation checksum mismatch"
     );
     Ok((id, bundle))
 }
 
 pub fn list(root: &Path, snapshot: &SnapshotId) -> Result<Vec<ObservationSummary>> {
-    let directory = scope(root, snapshot);
-    if !directory.exists() {
+    let Some(directory) = ScopedDirectory::open(&scope(root, snapshot), false)? else {
         return Ok(vec![]);
-    }
-    let mut paths = Vec::new();
-    for entry in fs::read_dir(directory)? {
-        let path = entry?.path();
-        if path.extension().is_some_and(|e| e == "json") {
-            paths.push(path);
-        }
-        ensure!(
-            paths.len() <= MAX_BUNDLES,
-            "snapshot observation limit exceeded"
-        );
-    }
-    paths.sort();
-    paths
+    };
+    directory
+        .json_names(MAX_BUNDLES)?
         .into_iter()
         .map(|path| {
-            let (id, bundle) = read_bundle(&path)?;
+            let (id, bundle) = read_bundle(&directory, &path)?;
             ensure!(
                 &bundle.snapshot_id == snapshot,
                 "observation snapshot mismatch"
@@ -572,5 +725,10 @@ mod tests {
             1
         );
         assert_eq!(list(&root, &snapshot.id).unwrap().len(), 50);
+    }
+
+    mod io {
+        use super::*;
+        include!("io_tests.rs");
     }
 }

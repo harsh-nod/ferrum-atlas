@@ -1,11 +1,10 @@
 //! Import compiler records without executing a toolchain or analyzed source.
+use super::ScopedDirectory;
 use anyhow::{Context, Result, ensure};
 use atlas_model::*;
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::{self, File},
-    io::Read,
     path::{Component, Path, PathBuf},
 };
 
@@ -526,76 +525,42 @@ pub fn import(
         "compiler mapping exceeds object byte budget"
     );
     let id = digest("compiler-import", &imported);
-    let folder = folder(root, &snapshot.id);
-    fs::create_dir_all(&folder)?;
-    let lock = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(folder.join(".import.lock"))?;
-    lock.lock()?;
-    let path = folder.join(format!("{}.json", id.split_once(':').unwrap().1));
-    if !path.exists() {
-        ensure!(
-            fs::read_dir(&folder)?
-                .filter_map(|entry| entry.ok())
-                .filter(|entry| entry
-                    .path()
-                    .extension()
-                    .is_some_and(|extension| extension == "json"))
-                .count()
-                < 16,
-            "compiler import limit reached"
-        );
-        let mut file = tempfile::NamedTempFile::new_in(&folder)?;
-        serde_json::to_writer(&mut file, &imported)?;
-        file.as_file().sync_all()?;
-        file.persist_noclobber(&path)?;
-        File::open(&folder)?.sync_all()?;
+    let folder = ScopedDirectory::open(&folder(root, &snapshot.id), true)?
+        .context("compiler scope unavailable")?;
+    let _lock = folder.import_lock()?;
+    let path = PathBuf::from(format!("{}.json", id.split_once(':').unwrap().1));
+    let names = folder.json_names(16)?;
+    if !folder.exists(&path)? {
+        ensure!(names.len() < 16, "compiler import limit reached");
+        folder.publish(&path, &serde_json::to_vec(&imported)?)?;
     }
     ensure!(
-        digest("compiler-import", &read(&path)?) == id,
+        digest("compiler-import", &read_from(&folder, &path)?) == id,
         "compiler import checksum mismatch"
     );
     Ok(summary(&id, &imported))
 }
-fn read(path: &Path) -> Result<CompilerImport> {
-    ensure!(
-        path.symlink_metadata()?.is_file(),
-        "compiler object must be a regular file"
-    );
-    let file = File::open(path)?;
-    ensure!(
-        file.metadata()?.len() <= MAX_BYTES + 1024 * 1024,
-        "compiler object exceeds budget"
-    );
-    let value: CompilerImport = serde_json::from_reader(file.take(MAX_BYTES + 1024 * 1024 + 1))?;
+fn read_from(folder: &ScopedDirectory, name: &Path) -> Result<CompilerImport> {
+    let value: CompilerImport =
+        serde_json::from_slice(&folder.read(name, MAX_BYTES + 1024 * 1024)?)?;
     let id = digest("compiler-import", &value);
     ensure!(
-        path.file_stem().and_then(|s| s.to_str()) == id.split_once(':').map(|(_, id)| id),
+        name.file_stem().and_then(|s| s.to_str()) == id.split_once(':').map(|(_, id)| id),
         "compiler object checksum mismatch"
     );
     Ok(value)
 }
-fn paths(root: &Path, snapshot: &SnapshotId) -> Result<Vec<PathBuf>> {
-    let folder = folder(root, snapshot);
-    if !folder.exists() {
-        return Ok(vec![]);
-    }
-    let mut paths = Vec::new();
-    for entry in fs::read_dir(folder)? {
-        let path = entry?.path();
-        if path
-            .extension()
-            .is_some_and(|extension| extension == "json")
-        {
-            paths.push(path);
-        }
-        ensure!(paths.len() <= 16, "compiler import count exceeds budget");
-    }
-    paths.sort();
-    Ok(paths)
+#[cfg(test)]
+fn read(path: &Path) -> Result<CompilerImport> {
+    let directory = ScopedDirectory::open(
+        path.parent().context("compiler object has no parent")?,
+        false,
+    )?
+    .context("compiler scope unavailable")?;
+    read_from(
+        &directory,
+        Path::new(path.file_name().context("compiler object has no name")?),
+    )
 }
 fn summary(id: &str, import: &CompilerImport) -> CompilerImportSummary {
     CompilerImportSummary {
@@ -618,10 +583,14 @@ pub fn list(
     snapshot: &SnapshotId,
     context: &ContextId,
 ) -> Result<Vec<CompilerImportSummary>> {
-    paths(root, snapshot)?
+    let Some(directory) = ScopedDirectory::open(&folder(root, snapshot), false)? else {
+        return Ok(vec![]);
+    };
+    directory
+        .json_names(16)?
         .into_iter()
         .map(|path| {
-            let imported = read(&path)?;
+            let imported = read_from(&directory, &path)?;
             ensure!(
                 &imported.snapshot_id == snapshot && &imported.context_id == context,
                 "compiler scope mismatch"
@@ -650,7 +619,9 @@ pub fn flow(
         suffix.len() == 64 && suffix.bytes().all(|c| c.is_ascii_hexdigit()),
         "invalid compiler import identity"
     );
-    let imported = read(&folder(root, snapshot).join(format!("{suffix}.json")))?;
+    let directory = ScopedDirectory::open(&folder(root, snapshot), false)?
+        .context("compiler scope unavailable")?;
+    let imported = read_from(&directory, Path::new(&format!("{suffix}.json")))?;
     ensure!(
         &imported.snapshot_id == snapshot && &imported.context_id == context,
         "compiler scope mismatch"
@@ -692,4 +663,11 @@ pub fn flow(
 }
 
 #[cfg(test)]
-mod tests;
+mod tests {
+    use std::fs::{self, File};
+    include!("compiler/tests.rs");
+    mod io {
+        use super::*;
+        include!("compiler/io_tests.rs");
+    }
+}
