@@ -8,10 +8,16 @@ pub struct SnapshotReader {
     store: Store,
     pub snapshot: Snapshot,
     connection: Connection,
+    _lease: Option<std::fs::File>,
 }
 
 impl SnapshotReader {
-    pub(crate) fn open(store: Store, snapshot: Snapshot, path: &Path) -> Result<Self> {
+    pub(crate) fn open(
+        store: Store,
+        snapshot: Snapshot,
+        path: &Path,
+        lease: Option<std::fs::File>,
+    ) -> Result<Self> {
         let connection = Connection::open_with_flags(
             path,
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -38,6 +44,7 @@ impl SnapshotReader {
             store,
             snapshot,
             connection,
+            _lease: lease,
         })
     }
 

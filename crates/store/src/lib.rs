@@ -1,10 +1,12 @@
 //! Validated immutable snapshot storage and transactional publication.
 mod error;
 mod reader;
+mod retention;
 mod validate;
 
 pub use error::{Error, Result};
 pub use reader::SnapshotReader;
+pub use retention::{GcObject, GcPlan, GcReport, RetainedSnapshot, RetentionPolicy, SnapshotPin};
 pub use validate::validate;
 
 use atlas_model::*;
@@ -30,15 +32,6 @@ pub struct IntegrityReport {
     pub errors: Vec<String>,
 }
 
-#[derive(Debug, Serialize)]
-pub struct GcReport {
-    pub dry_run: bool,
-    pub live_objects: usize,
-    pub unreferenced_objects: Vec<String>,
-    pub unreferenced_bytes: u64,
-    pub limitations: Vec<String>,
-}
-
 impl Store {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         if rusqlite::version_number() < 3_051_003 {
@@ -56,6 +49,11 @@ impl Store {
                 .recursive(true)
                 .mode(0o700)
                 .create(root.join(name))?;
+            if !fs::symlink_metadata(root.join(name))?.file_type().is_dir() {
+                return Err(Error::Unavailable(
+                    "store object directory is not a real directory".into(),
+                ));
+            }
         }
         match fs::OpenOptions::new()
             .write(true)
@@ -68,6 +66,13 @@ impl Store {
             Err(error) => return Err(error.into()),
         }
         let store = Self { root };
+        let _lease = store.lease(false, &|| false)?;
+        if !fs::symlink_metadata(store.root.join("catalog.sqlite"))?
+            .file_type()
+            .is_file()
+        {
+            return Err(Error::Unavailable("catalog must be a regular file".into()));
+        }
         let connection = store.connect()?;
         let version: u32 = connection.pragma_query_value(None, "user_version", |r| r.get(0))?;
         if version != 0 && version != SCHEMA_VERSION {
@@ -78,6 +83,8 @@ impl Store {
             CREATE INDEX IF NOT EXISTS snapshots_repository ON snapshots(repository_id,id);
             CREATE TABLE IF NOT EXISTS heads(name TEXT PRIMARY KEY, snapshot_id TEXT NOT NULL REFERENCES snapshots(id));
             PRAGMA user_version=1;")?;
+        retention::initialize(&connection)?;
+        store.initialize_object_ownership()?;
         Ok(store)
     }
 
@@ -212,6 +219,7 @@ impl Store {
         expected: Option<&SnapshotId>,
         fail_after: Option<u8>,
     ) -> Result<Snapshot> {
+        let _lease = self.lease(false, &|| false)?;
         validate(batch)?;
         if head.is_empty() || head.len() > 256 {
             return Err(Error::Invalid(
@@ -262,6 +270,7 @@ impl Store {
         let shard_hash = checksum(staged.path())?;
         let final_path = self.object_path("shards", &shard_hash)?;
         persist_immutable(staged, &final_path, &shard_hash)?;
+        self.register_object("shards", &shard_hash)?;
         injected_failure(fail_after, 2)?;
         let mut connection = self.connect()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -295,6 +304,10 @@ impl Store {
         }
         injected_failure(fail_after, 3)?;
         transaction.execute("INSERT INTO heads VALUES(?1,?2) ON CONFLICT(name) DO UPDATE SET snapshot_id=excluded.snapshot_id", params![head,id.0])?;
+        transaction.execute(
+            "INSERT OR IGNORE INTO snapshot_generations(snapshot_id,published_at) VALUES(?1,?2)",
+            params![id.0, retention::now()],
+        )?;
         injected_failure(fail_after, 4)?;
         transaction.commit()?;
         injected_failure(fail_after, 5)?;
@@ -314,6 +327,7 @@ impl Store {
                     "existing source object failed checksum".into(),
                 ));
             }
+            self.register_object("sources", hash)?;
             return Ok(());
         }
         let mut temp = tempfile::NamedTempFile::new_in(self.root.join("staging"))?;
@@ -333,6 +347,7 @@ impl Store {
             Err(error) => return Err(Error::Io(error.error)),
         }
         File::open(self.root.join("sources"))?.sync_all()?;
+        self.register_object("sources", hash)?;
         Ok(())
     }
 
@@ -352,6 +367,16 @@ impl Store {
         id: &SnapshotId,
         stopped: &dyn Fn() -> bool,
     ) -> Result<SnapshotReader> {
+        let lease = self.lease(false, stopped)?;
+        self.reader_leased(id, stopped, Some(lease))
+    }
+
+    fn reader_leased(
+        &self,
+        id: &SnapshotId,
+        stopped: &dyn Fn() -> bool,
+        lease: Option<File>,
+    ) -> Result<SnapshotReader> {
         let (metadata, hash): (String, String) = self
             .connect()?
             .query_row(
@@ -369,10 +394,11 @@ impl Store {
         if checksum_with_stop(&path, stopped)? != hash {
             return Err(Error::Unavailable("shard checksum mismatch".into()));
         }
-        SnapshotReader::open(self.clone(), snapshot, &path)
+        SnapshotReader::open(self.clone(), snapshot, &path, lease)
     }
 
     pub fn integrity_check(&self) -> Result<IntegrityReport> {
+        let _lease = self.lease(false, &|| false)?;
         let snapshots = self.snapshots()?;
         let mut errors = Vec::new();
         let check: String = self
@@ -399,42 +425,6 @@ impl Store {
             snapshots_checked: snapshots.len(),
             errors,
         })
-    }
-
-    pub fn gc_dry_run(&self) -> Result<GcReport> {
-        let connection = self.connect()?;
-        let mut statement = connection.prepare("SELECT id,shard_hash FROM snapshots")?;
-        let mut live = BTreeSet::new();
-        for row in
-            statement.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
-        {
-            let (id, hash) = row?;
-            live.insert(format!("shards/{hash}"));
-            for source in self.reader(&SnapshotId(id))?.files()? {
-                live.insert(format!(
-                    "sources/{}",
-                    source.content_hash.trim_start_matches("content:")
-                ));
-            }
-        }
-        let mut unreferenced_objects = Vec::new();
-        let mut unreferenced_bytes = 0;
-        for category in ["sources", "shards", "staging"] {
-            for entry in fs::read_dir(self.root.join(category))? {
-                let entry = entry?;
-                if !entry.file_type()?.is_file() {
-                    continue;
-                }
-                let key = format!("{category}/{}", entry.file_name().to_string_lossy());
-                if !live.contains(&key) {
-                    unreferenced_bytes += entry.metadata()?.len();
-                    unreferenced_objects.push(key);
-                }
-            }
-        }
-        unreferenced_objects.sort();
-        Ok(GcReport { dry_run: true, live_objects: live.len(), unreferenced_objects, unreferenced_bytes,
-            limitations: vec!["All published snapshots are retained. Deletion is disabled until active-reader leases and retention policy are implemented.".into()] })
     }
 }
 
