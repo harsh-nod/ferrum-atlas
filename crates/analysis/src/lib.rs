@@ -1,6 +1,8 @@
 //! Deterministic, bounded interpretations over explicitly selected facts.
+mod dataflow;
 mod graph;
 mod trace;
+pub use dataflow::*;
 pub use graph::*;
 pub use trace::*;
 
@@ -152,7 +154,13 @@ pub fn typescript() -> String {
         TraceCompareRequest,
         TracePosition,
         TraceDivergence,
-        TraceComparison
+        TraceComparison,
+        DataflowLimits,
+        MirPoint,
+        LocalDefinition,
+        LocalUse,
+        UnknownMemoryEffect,
+        ReachingDefinitions
     );
     output
 }
