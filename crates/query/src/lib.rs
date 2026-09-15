@@ -89,6 +89,21 @@ impl QueryEngine {
         Ok(self.store.snapshot(id)?)
     }
 
+    /// Explicit cold verification, separate from the interactive query deadline.
+    pub fn prepare_snapshot(
+        &self,
+        id: &SnapshotId,
+        context: &ContextId,
+        control: &QueryControl,
+    ) -> Result<SnapshotPreparation> {
+        self.reader(id, context, control)?;
+        Ok(SnapshotPreparation {
+            snapshot_id: id.clone(),
+            context_id: context.clone(),
+            ready: true,
+        })
+    }
+
     pub fn set_snapshot_pin(
         &self,
         id: &SnapshotId,

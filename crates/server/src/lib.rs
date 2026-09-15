@@ -114,6 +114,7 @@ pub fn router(engine: QueryEngine, config: &ServerConfig) -> anyhow::Result<Rout
         .route("/snapshots/{id}", get(snapshot))
         .route("/snapshots/{id}/pin", post(advanced::pin_snapshot))
         .route("/snapshots/{id}/unpin", post(advanced::unpin_snapshot))
+        .route("/snapshots/{id}/prepare", post(advanced::prepare_snapshot))
         .route("/search", get(search))
         .route("/definitions/{id}", get(definition))
         .route("/source/{id}", get(source))
@@ -341,6 +342,18 @@ where
     T: Serialize + Send + 'static,
     F: FnOnce(QueryEngine) -> Result<T, HttpError> + Send + 'static,
 {
+    perform_with_timeout(state, operation, Duration::from_secs(3)).await
+}
+
+async fn perform_with_timeout<T, F>(
+    state: AppState,
+    operation: F,
+    timeout: Duration,
+) -> Result<Json<T>, HttpError>
+where
+    T: Serialize + Send + 'static,
+    F: FnOnce(QueryEngine) -> Result<T, HttpError> + Send + 'static,
+{
     let permit = state.permits.clone().try_acquire_owned().map_err(|_| {
         HttpError::new(
             StatusCode::TOO_MANY_REQUESTS,
@@ -361,7 +374,7 @@ where
         })?;
         Ok(result)
     });
-    match tokio::time::timeout(Duration::from_secs(3), task).await {
+    match tokio::time::timeout(timeout, task).await {
         Ok(Ok(result)) => result.map(Json),
         Ok(Err(_)) => Err(HttpError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -807,6 +820,7 @@ mod tests {
             "/v1/traces/compare",
             "/v1/snapshots/id/pin",
             "/v1/snapshots/id/unpin",
+            "/v1/snapshots/id/prepare",
         ] {
             let response = app
                 .clone()

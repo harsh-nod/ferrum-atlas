@@ -1,5 +1,25 @@
 use super::*;
 
+#[derive(Deserialize)]
+pub(super) struct PrepareParams {
+    context_id: ContextId,
+}
+
+pub(super) async fn prepare_snapshot(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(params): Query<PrepareParams>,
+) -> Result<Json<SnapshotPreparation>, HttpError> {
+    let control = QueryControl::new(Duration::from_secs(30));
+    let _guard = CancelOnDrop(control.clone());
+    perform_with_timeout(
+        state,
+        move |q| Ok(q.prepare_snapshot(&SnapshotId(id), &params.context_id, &control)?),
+        Duration::from_secs(30),
+    )
+    .await
+}
+
 pub(super) async fn pin_snapshot(
     State(state): State<AppState>,
     Path(id): Path<String>,

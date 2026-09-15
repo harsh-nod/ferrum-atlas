@@ -3,7 +3,7 @@ mod watch;
 use atlas_frontend::AnalysisLevel;
 use atlas_ingest::CaptureOptions;
 use atlas_model::*;
-use atlas_query::QueryEngine;
+use atlas_query::{QueryControl, QueryEngine};
 use atlas_store::Store;
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
@@ -557,6 +557,11 @@ async fn run(cli: Cli) -> Result<()> {
             let id = selected_snapshot(&store, snapshot, &profile)?;
             let query = QueryEngine::new(store)?;
             let snapshot = query.snapshot(&id)?;
+            query.prepare_snapshot(
+                &id,
+                &snapshot.context.id,
+                &QueryControl::new(Duration::from_secs(30)),
+            )?;
             if matches!(kind, QueryKind::Search) {
                 print_json(&query.search(&id, &snapshot.context.id, &text, 50, None)?)?;
             } else {
@@ -577,12 +582,16 @@ async fn run(cli: Cli) -> Result<()> {
                 })?)?;
             }
         }
-        Commands::Diff { before, after } => print_json(
-            &QueryEngine::new(Store::open(&cli.store)?)?.diff(&DiffRequest {
-                before: SnapshotId(before),
-                after: SnapshotId(after),
-            })?,
-        )?,
+        Commands::Diff { before, after } => {
+            let query = QueryEngine::new(Store::open(&cli.store)?)?;
+            let before = SnapshotId(before);
+            let after = SnapshotId(after);
+            let control = QueryControl::new(Duration::from_secs(30));
+            for id in [&before, &after] {
+                query.prepare_snapshot(id, &query.snapshot(id)?.context.id, &control)?;
+            }
+            print_json(&query.diff(&DiffRequest { before, after })?)?;
+        }
         Commands::Doctor => {
             let store = Store::open(&cli.store)?;
             let report = store.integrity_check()?;
@@ -798,15 +807,27 @@ async fn run(cli: Cli) -> Result<()> {
             let id = selected_snapshot(&store, snapshot, &profile)?;
             let query = QueryEngine::new(store)?;
             let metadata = query.snapshot(&id)?;
+            let preparation = Instant::now();
+            query.prepare_snapshot(
+                &id,
+                &metadata.context.id,
+                &QueryControl::new(Duration::from_secs(30)),
+            )?;
+            let preparation_ms = preparation.elapsed().as_secs_f64() * 1000.0;
             let mut times = Vec::with_capacity(samples);
+            let mut results = Vec::with_capacity(samples);
             for _ in 0..samples {
                 let start = Instant::now();
-                query.search(&id, &metadata.context.id, "", 50, None)?;
+                let result = query.search(&id, &metadata.context.id, "", 50, None);
                 times.push(start.elapsed().as_secs_f64() * 1000.0);
+                results.push(match result {
+                    Ok(result) => serde_json::json!({"ok": !result.work.deadline_reached, "items": result.items.len(), "truncated": result.page.truncated, "deadline_reached": result.work.deadline_reached, "coverage": result.coverage.status}),
+                    Err(error) => serde_json::json!({"ok": false, "error_code": error.code()}),
+                });
             }
             let mut sorted = times.clone();
             sorted.sort_by(f64::total_cmp);
-            let report = serde_json::json!({"version":1, "workload":"local symbol search, top 50", "cache":"uncontrolled local cache; first sample retained", "snapshot":metadata, "samples_ms":times, "p50_ms":sorted[(samples-1)/2], "p95_ms":sorted[((samples as f64 * 0.95).ceil() as usize - 1).min(samples-1)], "hardware":{"os":std::env::consts::OS,"arch":std::env::consts::ARCH,"logical_cpus":std::thread::available_parallelism().map(|n|n.get()).unwrap_or(1)}, "limitations":["Smoke measurement only; no L/S/O qualification, cold-cache claim, or p99 inference."]});
+            let report = serde_json::json!({"version":1, "workload":"local symbol search, top 50", "cache":"explicit checksum preparation; OS page cache uncontrolled; first query sample retained", "preparation_ms":preparation_ms, "snapshot":metadata, "samples_ms":times, "sample_results":results, "p50_ms":sorted[(samples-1)/2], "p95_ms":sorted[((samples as f64 * 0.95).ceil() as usize - 1).min(samples-1)], "hardware":{"os":std::env::consts::OS,"arch":std::env::consts::ARCH,"logical_cpus":std::thread::available_parallelism().map(|n|n.get()).unwrap_or(1)}, "limitations":["Smoke measurement only; no L/S/O qualification, cold-cache claim, or p99 inference. Failed/deadline samples are retained and are not completed query timings."]});
             match output {
                 Some(path) => private_json(&path, &report)?,
                 None => print_json(&report)?,

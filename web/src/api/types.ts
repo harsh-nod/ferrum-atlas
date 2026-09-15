@@ -42,6 +42,7 @@ export type Capabilities = { api_version: string, schema_version: number, analys
 export type ApiError = { code: string, message: string, correlation_id: string, };
 export type SnapshotPinRequest = { context_id: ContextId, name: string, };
 export type SnapshotPinState = { snapshot_id: SnapshotId, context_id: ContextId, name: string, retained: boolean, };
+export type SnapshotPreparation = { snapshot_id: SnapshotId, context_id: ContextId, ready: boolean, };
 export type TestOutcome = "pass" | "fail" | "expected_fail" | "unexpected_pass" | "timeout" | "infrastructure_error" | "not_run" | "unknown";
 export type ArtifactIdentity = { sha256: string, source_id: SourceId, context_id: ContextId, producer: string, };
 export type TestObservation = { name: string, outcome: TestOutcome, elapsed_ns: string | null, timeout_ns: string | null, reason: string | null, definition_ids: Array<DefinitionId>, };

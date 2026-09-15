@@ -159,6 +159,41 @@ fn bookmark_retention_is_idempotent_authorized_and_snapshot_scoped() {
     assert!(store.pins().unwrap().is_empty());
 }
 
+#[test]
+fn preparation_is_authorized_context_bound_and_cancellable() {
+    let (_temp, engine, snapshot) = engine(4);
+    let control = QueryControl::new(Duration::from_secs(1));
+    let denied = engine.clone().with_repositories([]);
+    assert_eq!(
+        denied
+            .prepare_snapshot(&snapshot.id, &snapshot.context.id, &control)
+            .unwrap_err()
+            .code(),
+        "not_authorized"
+    );
+    assert_eq!(
+        engine
+            .prepare_snapshot(&snapshot.id, &ContextId("wrong".into()), &control)
+            .unwrap_err()
+            .code(),
+        "context_mismatch"
+    );
+    assert!(
+        engine
+            .prepare_snapshot(&snapshot.id, &snapshot.context.id, &control)
+            .unwrap()
+            .ready
+    );
+    control.cancel();
+    assert_eq!(
+        engine
+            .prepare_snapshot(&snapshot.id, &snapshot.context.id, &control)
+            .unwrap_err()
+            .code(),
+        "budget_exhausted"
+    );
+}
+
 fn graph(snapshot: &Snapshot) -> GraphRequest {
     GraphRequest {
         snapshot_id: snapshot.id.clone(),

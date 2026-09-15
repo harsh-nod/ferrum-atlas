@@ -302,6 +302,15 @@ fn profiles_exports_and_raw_benchmark_samples_are_explicit() {
         "30",
     ]);
     assert_eq!(benchmark["samples_ms"].as_array().unwrap().len(), 30);
+    assert_eq!(benchmark["sample_results"].as_array().unwrap().len(), 30);
+    assert!(
+        benchmark["sample_results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|sample| sample["ok"] == true && sample["items"].as_u64().unwrap() > 0)
+    );
+    assert!(benchmark["preparation_ms"].as_f64().unwrap() >= 0.0);
     assert!(benchmark["p95_ms"].as_f64().unwrap() >= 0.0);
     assert!(
         !project
