@@ -64,6 +64,22 @@ class QualificationValidation(unittest.TestCase):
         report["process"]["ok"] = False
         self.assertEqual(validation.validate_report(report)["raw_samples"], 0)
 
+    def test_useful_content_is_distinct_from_empty_partial_and_expected_cancellation(self):
+        report = smoke()
+        report["workloads"][0]["samples"] = [{"wall_ms": 1.0, "ok": True, "result": {"items": 0, "partial": True}} for _ in range(30)]
+        self.assertFalse(validation.validate_report(report)["all_ordinary_responses_useful"])
+        for sample in report["workloads"][0]["samples"]:
+            sample["result"]["items"] = 50
+        self.assertTrue(validation.validate_report(report)["all_ordinary_responses_useful"])
+        cancelled = copy.deepcopy(report["workloads"][0])
+        cancelled["name"] = "pre_cancelled_graph"
+        for sample in cancelled["samples"]:
+            sample["result"] = {"nodes": 0, "deadline": True, "partial": True}
+        report["workloads"].append(cancelled)
+        summary = validation.validate_report(report)
+        self.assertTrue(summary["all_ordinary_responses_useful"])
+        self.assertEqual(summary["deadline_samples"], 30)
+
     def test_empty_human_template_is_not_evidence(self):
         with self.assertRaisesRegex(ValueError, "no human study"):
             validation.validate_study([], validation.STUDY_COLUMNS)

@@ -1,7 +1,8 @@
 # Qualification: Measured Next Gates
 
-Status on 2026-09-15: reproducible smoke tooling and 300 actual query/profile
-samples recorded. **No F/L/S/O/X tier passes, speedup, semantic accuracy, or human
+Status on 2026-09-15: reproducible smoke tooling, 300 initial query/profile samples,
+and 240 committed-build cache follow-up samples recorded. **No F/L/S/O/X tier
+passes, speedup multiplier, semantic accuracy, or human
 comprehension improvement are established.** Partial responses are not successful
 empty searches. A successful indexing process is not a useful-query pass.
 
@@ -83,10 +84,10 @@ These debug-build timings strongly indicate repeated whole-shard verification
 dominates the 250 ms interactive deadline: opening a 58.3 MB synthetic shard took
 seconds while querying its already-open indexes took milliseconds. This is a
 profile-supported hypothesis, not an optimized-build performance guarantee.
-Next work should validate a bounded immutable-object verification cache keyed by
-file identity and change metadata, preserve cancellation/corruption checks, then
-repeat identical workloads. An optimization is not a win until queries return
-the expected bounded contents, not just a faster empty partial response.
+The cache follow-up below tests a bounded immutable-object verification cache
+keyed by file identity and change metadata while preserving cancellation and
+corruption checks. Optimized-build and realistic concurrent-load repeats remain
+necessary; shorter empty partial responses would not constitute a useful result.
 
 The host was WSL2 Linux 6.6.87.2 on an AMD Ryzen AI Max+ Pro 395, 16 physical / 32
 logical CPUs and 94.07 GiB RAM. Workloads were restricted to logical CPUs 0 and 1,
@@ -101,7 +102,8 @@ Commands and resource details are in [benchmarks/README.md](../../benchmarks/REA
 The manifest and standalone Cargo lock make future runs reproducible from a clean
 candidate commit. `validate.py report` recomputes smoke percentiles, checks raw
 sample counts/resources/category counts, and rejects unearned tier/p99 claims.
-Twelve automated Python tests cover rejection logic and real runner deadline,
+Thirteen automated Python tests cover rejection logic, useful versus empty
+responses, and real runner deadline,
 RSS/CPU collection, executable freezing, and symlink-safe disk accounting.
 
 Still required: clean optimized-build repeats; useful-content success after the
@@ -115,3 +117,47 @@ define U1-U10, matched variants, at least eight real consenting participants,
 counterbalanced tool order, correctness and timing. No participants were recruited
 and no results were synthesized. The CSV validator rejects the empty template;
 independent consent/session auditing remains necessary even for a valid CSV.
+
+## Committed-Build Cache Follow-Up
+
+The [unchanged synthetic workload rerun](../../benchmarks/reports/synthetic-100k-cached-20260915.json)
+was built from clean commit `33be68174d82d39a9418509bbcbfa57326575219`, with
+the committed standalone lockfile and a separate target directory. The runner
+froze and verified the executable before launch. The fact digest, 100,002 record
+count, 825 unknowns, and 58,739,808 store bytes exactly match the preliminary run.
+
+All 120 ordinary search/graph/source samples returned useful bounded content;
+none reached its request deadline or failed. All 30 deliberately pre-cancelled
+samples remained explicit empty deadline-partial responses. Pagination/window
+truncation is retained and is not counted as a failure when useful content exists.
+
+| Workload | p50 | p95 | Identical result in all 30 samples |
+| --- | ---: | ---: | --- |
+| Search | 9.75 ms | 12.68 ms | 50 items, paginated |
+| High-degree graph | 74.49 ms | 103.52 ms | 200 nodes / 222 edges, node-budget partial |
+| Two-hop graph | 4.25 ms | 5.97 ms | 3 nodes / 8 edges, not truncated |
+| Source window | 52.34 ms | 70.73 ms | 1,900 bytes, bounded window |
+| Pre-cancelled graph | 1.49 ms | 3.85 ms | Explicitly cancelled, no graph contents |
+| Warm verified reader open | 1.34 ms | 1.69 ms | Cache hit with identity checks |
+| Already-open indexed search | 1.79 ms | 3.37 ms | 50 items |
+| Already-open adjacency | 8.70 ms | 13.27 ms | 501 bounded profiling rows |
+
+Publication, including cache seeding, took 19.17 s; the complete measured process
+took 28.70 s, 26.35 user + 1.56 system CPU seconds, and 138.73 MiB sampled peak
+process-tree RSS. Missing-shard injection still returned `unavailable_shard`, and
+restoration passed integrity checking. Total benchmark scratch, including the
+isolated build target, remained below 436 MB, well under the 4 GiB cap.
+
+The cache holds at most 256 completed verifications, no file contents. It checks
+expected hash, device/inode, size, nanosecond mtime/ctime, and mode; changed files
+are rehashed. New cold interactive requests still obey cancellation and can
+return budget-partial until explicit preparation completes. Publication seeds
+the same-process cache. A separate CLI process does not inherit it. The local
+filesystem's change metadata is trusted; this is not protection against a hostile
+privileged filesystem. Shard verification is bounded to 512 MiB objects.
+
+All 40 store tests and Clippy with warnings denied passed, including eight new
+cache/corruption/cancellation/identity/symlink regressions. The earlier binary's
+source provenance and shared-host conditions prevent a controlled speedup claim.
+This follow-up demonstrates useful warm responses for this generated workload,
+not a tier, real-corpus semantic, optimized-build, or sustained-load qualification.

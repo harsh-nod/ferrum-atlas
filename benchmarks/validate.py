@@ -41,6 +41,7 @@ def validate_report(report):
     if any(measurement.get("ok") for measurement in measurements):
         require(bool(report.get("workloads")), "successful indexing must include measured query workloads")
     total_samples, failed_samples, partial_samples, deadline_samples = 0, 0, 0, 0
+    ordinary_samples, useful_samples = 0, 0
     for workload in report.get("workloads", []):
         samples = workload.get("samples", [])
         require(len(samples) >= 30, "each measured workload requires 30 raw samples")
@@ -56,6 +57,12 @@ def validate_report(report):
         failed_samples += sum(not sample["ok"] for sample in samples)
         partial_samples += sum(bool(sample.get("result", {}).get("partial")) for sample in samples)
         deadline_samples += sum(bool(sample.get("result", {}).get("deadline")) for sample in samples)
+        if not workload.get("name", "").startswith(("profile_", "pre_cancelled_")):
+            ordinary_samples += len(samples)
+            for sample in samples:
+                result = sample.get("result", {})
+                useful_samples += int(sample["ok"] and not result.get("deadline", False)
+                                      and any(result.get(key, 0) > 0 for key in ("items", "nodes", "bytes")))
     for measurement in measurements:
         require(measurement.get("sampled_process_tree_peak_rss_bytes", 0) <= 2 * 1024**3,
                 "observed process tree exceeded approved memory budget")
@@ -65,6 +72,8 @@ def validate_report(report):
     require(report.get("store_bytes", 0) <= 4 * 1024**3, "index exceeded disk budget")
     return {"valid": True, "qualified": False, "kind": report["kind"], "raw_samples": total_samples,
             "failed_samples": failed_samples, "partial_samples": partial_samples, "deadline_samples": deadline_samples,
+            "ordinary_response_samples": ordinary_samples, "useful_response_samples": useful_samples,
+            "all_ordinary_responses_useful": ordinary_samples > 0 and useful_samples == ordinary_samples,
             "facts_count": report.get("facts_count"), "index_succeeded": report.get("index", report.get("process", {})).get("ok")}
 
 
