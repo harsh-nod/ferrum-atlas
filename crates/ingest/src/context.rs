@@ -38,6 +38,7 @@ pub(super) fn build_context(
         context.manifest_digest = manifest_digest;
         context.features.sort();
         context.features.dedup();
+        context.crates.sort_by(|a, b| a.root_file.cmp(&b.root_file));
         context.id = context_id(&context);
         return Ok(context);
     }
@@ -83,6 +84,9 @@ pub(super) fn build_context(
             .get("edition")
             .and_then(toml::Value::as_str)
             .or_else(|| {
+                if !package.get("edition")?.get("workspace")?.as_bool()? {
+                    return None;
+                }
                 manifests
                     .get("Cargo.toml")?
                     .get("workspace")?
@@ -191,7 +195,9 @@ pub(super) fn build_context(
                 } else {
                     declared
                 };
-                if dependency.get("optional").and_then(toml::Value::as_bool) == Some(true) {
+                if declared.get("optional").and_then(toml::Value::as_bool) == Some(true)
+                    || dependency.get("optional").and_then(toml::Value::as_bool) == Some(true)
+                {
                     add_gap(
                         &mut coverage,
                         UnknownReason::CfgUnknown,
@@ -331,6 +337,95 @@ mod tests {
     use super::*;
     use crate::capture;
     use std::fs;
+    #[test]
+    fn workspace_edition_opt_in_and_member_optional_dependency_are_preserved() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("Cargo.toml"), "[workspace]\nmembers=['member','helper']\n[workspace.package]\nedition='2024'\n[workspace.dependencies]\nhelper={path='helper'}\n").unwrap();
+        for name in ["member", "helper"] {
+            fs::create_dir_all(dir.path().join(name).join("src")).unwrap();
+            fs::write(
+                dir.path().join(name).join("src/lib.rs"),
+                "pub fn entry() {}\n",
+            )
+            .unwrap();
+        }
+        fs::write(dir.path().join("member/Cargo.toml"), "[package]\nname='member'\nversion='0.1.0'\n[dependencies]\nhelper={workspace=true,optional=true}\n").unwrap();
+        fs::write(
+            dir.path().join("helper/Cargo.toml"),
+            "[package]\nname='helper'\nversion='0.1.0'\nedition.workspace=true\n",
+        )
+        .unwrap();
+        let (_, context) = capture(dir.path(), &CaptureOptions::default()).unwrap();
+        let member = context
+            .crates
+            .iter()
+            .find(|krate| krate.name == "member")
+            .unwrap();
+        let helper = context
+            .crates
+            .iter()
+            .find(|krate| krate.name == "helper")
+            .unwrap();
+        assert_eq!(member.edition, "2015");
+        assert_eq!(helper.edition, "2024");
+        assert!(!member.dependencies.contains_key("helper"));
+        assert!(
+            context
+                .coverage
+                .reasons
+                .iter()
+                .any(|reason| reason.reason == UnknownReason::CfgUnknown)
+        );
+    }
+
+    #[test]
+    fn explicit_context_validates_roots_and_canonicalizes_order() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("left.rs"), "pub fn left() {}\n").unwrap();
+        fs::write(dir.path().join("right.rs"), "pub fn right() {}\n").unwrap();
+        let (_, mut context) = capture(dir.path(), &CaptureOptions::default()).unwrap();
+        context.crates = ["left", "right"]
+            .map(|name| CrateInput {
+                name: name.into(),
+                root_file: format!("{name}.rs"),
+                edition: "2021".into(),
+                dependencies: BTreeMap::new(),
+            })
+            .to_vec();
+        context.features = vec!["fast".into(), "slow".into(), "fast".into()];
+        let first = capture(
+            dir.path(),
+            &CaptureOptions {
+                explicit_context: Some(context.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        context.crates.reverse();
+        context.features.reverse();
+        let second = capture(
+            dir.path(),
+            &CaptureOptions {
+                explicit_context: Some(context.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(first.1.id, second.1.id);
+        context.crates[0]
+            .dependencies
+            .insert("missing".into(), "missing.rs".into());
+        assert!(
+            capture(
+                dir.path(),
+                &CaptureOptions {
+                    explicit_context: Some(context),
+                    ..Default::default()
+                }
+            )
+            .is_err()
+        );
+    }
     #[test]
     fn path_dependencies_preserve_aliases() {
         let dir = tempfile::tempdir().unwrap();

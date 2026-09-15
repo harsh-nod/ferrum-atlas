@@ -1,6 +1,6 @@
 use atlas_frontend::{AnalysisLevel, analyze};
 use atlas_ingest::{CaptureOptions, capture};
-use atlas_model::{Definition, FactBatch, Target, UnknownReason};
+use atlas_model::{CfgStatus, Definition, FactBatch, Target, UnknownReason};
 use std::{collections::BTreeSet, fs};
 
 fn project(files: &[(&str, &str)]) -> tempfile::TempDir {
@@ -100,6 +100,7 @@ fn resolves_modules_aliases_recursion_and_same_names_by_hir_identity() {
         .collect::<Vec<_>>();
     assert_eq!(same.len(), 2);
     assert_ne!(same[0].id, same[1].id);
+    assert!(facts.relations.iter().all(|edge| edge.kind == "calls"));
     assert!(
         facts
             .evidence
@@ -268,4 +269,211 @@ fn separate_local_items_have_distinct_owner_keys() {
     let facts = facts(&dir, AnalysisLevel::Semantic);
     assert_eq!(targets(&facts, "first"), vec!["src::lib::first::local"]);
     assert_eq!(targets(&facts, "second"), vec!["src::lib::second::local"]);
+}
+
+#[test]
+fn known_features_defaults_and_test_cfg_choose_only_the_selected_definition() {
+    let dir = project(&[
+        (
+            "Cargo.toml",
+            "[package]\nname='fixture'\nversion='0.1.0'\nedition='2021'\n[features]\ndefault=['fast']\nfast=['extra']\nextra=[]\n",
+        ),
+        (
+            "src/lib.rs",
+            "#[cfg(feature=\"extra\")] fn selected() { fast_leaf(); } #[cfg(not(feature=\"extra\"))] fn selected() { slow_leaf(); } fn entry() { selected(); } fn fast_leaf() {} fn slow_leaf() {} #[cfg(test)] mod tests { #[cfg(unknown_inside_inactive)] fn omitted() { absent(); } }",
+        ),
+    ]);
+    for (options, expected_leaf) in [
+        (CaptureOptions::default(), "fast_leaf"),
+        (
+            CaptureOptions {
+                default_features: false,
+                ..Default::default()
+            },
+            "slow_leaf",
+        ),
+        (
+            CaptureOptions {
+                default_features: false,
+                features: vec!["fast".into()],
+                ..Default::default()
+            },
+            "fast_leaf",
+        ),
+    ] {
+        let (source, context) = capture(dir.path(), &options).unwrap();
+        let facts = analyze(source, context, AnalysisLevel::Semantic).unwrap();
+        let selected = facts
+            .definitions
+            .iter()
+            .find(|item| item.name == "selected" && item.cfg_status == CfgStatus::Active)
+            .unwrap();
+        assert!(
+            facts
+                .relations
+                .iter()
+                .any(|edge| edge.source == definition(&facts, "entry").id
+                    && matches!(&edge.target, Target::Resolved { id } if id == &selected.id)),
+            "{:#?}",
+            facts.relations
+        );
+        assert!(facts.relations.iter().any(|edge| edge.source == selected.id && matches!(&edge.target, Target::Resolved { id } if id == &definition(&facts, expected_leaf).id)));
+        let inactive = facts
+            .definitions
+            .iter()
+            .find(|item| item.name == "selected" && item.cfg_status == CfgStatus::Inactive)
+            .unwrap();
+        assert!(
+            !facts
+                .relations
+                .iter()
+                .any(|edge| edge.source == inactive.id)
+        );
+        assert_eq!(
+            definition(&facts, "omitted").cfg_status,
+            CfgStatus::Inactive
+        );
+        assert!(!facts.relations.iter().any(|edge| matches!(
+            edge.target,
+            Target::Unknown {
+                reason: UnknownReason::CfgUnknown,
+                ..
+            }
+        )));
+    }
+}
+
+#[test]
+fn explicit_cfg_values_and_combinators_preserve_three_state_logic() {
+    let dir = project(&[(
+        "src/lib.rs",
+        "#[cfg(all(firmware,target_os=\"none\",not(test)))] fn selected() {} #[cfg(not(all(firmware,target_os=\"none\",not(test))))] fn selected() {} fn entry() { selected(); } #[cfg(any(test,all()))] fn always() {} #[cfg_attr(test,cfg(unavailable))] fn untouched() {}",
+    )]);
+    let options = CaptureOptions {
+        cfg: std::collections::BTreeMap::from([
+            ("firmware".into(), None),
+            ("target_os".into(), Some("none".into())),
+        ]),
+        ..Default::default()
+    };
+    let (source, context) = capture(dir.path(), &options).unwrap();
+    let facts = analyze(source, context, AnalysisLevel::Semantic).unwrap();
+    assert_eq!(definition(&facts, "always").cfg_status, CfgStatus::Active);
+    assert_eq!(
+        definition(&facts, "untouched").cfg_status,
+        CfgStatus::Active
+    );
+    assert_eq!(targets(&facts, "entry").len(), 1);
+    assert_eq!(
+        facts
+            .definitions
+            .iter()
+            .filter(|item| item.name == "selected" && item.cfg_status == CfgStatus::Active)
+            .count(),
+        1
+    );
+    let (source, context) = capture(dir.path(), &CaptureOptions::default()).unwrap();
+    let facts = analyze(source, context, AnalysisLevel::Semantic).unwrap();
+    assert!(
+        facts
+            .definitions
+            .iter()
+            .filter(|item| item.name == "selected")
+            .all(|item| item.cfg_status == CfgStatus::Unknown)
+    );
+    assert!(targets(&facts, "entry").is_empty());
+}
+
+#[test]
+fn incomplete_dependency_feature_resolution_stays_unknown() {
+    let dir = project(&[
+        (
+            "Cargo.toml",
+            "[package]\nname='fixture'\nversion='0.1.0'\nedition='2021'\n[features]\ndefault=['other/fast']\n[dependencies]\nother={path='other'}\n",
+        ),
+        ("src/lib.rs", "fn entry() { other::selected(); }"),
+        (
+            "other/Cargo.toml",
+            "[package]\nname='other'\nversion='0.1.0'\nedition='2021'\n[features]\nfast=[]\n",
+        ),
+        (
+            "other/src/lib.rs",
+            "#[cfg(feature=\"fast\")] pub fn selected() {} #[cfg(not(feature=\"fast\"))] pub fn selected() {}",
+        ),
+    ]);
+    let facts = facts(&dir, AnalysisLevel::Semantic);
+    assert!(targets(&facts, "entry").is_empty());
+    assert!(
+        facts
+            .definitions
+            .iter()
+            .filter(|item| item.name == "selected")
+            .all(|item| item.cfg_status == CfgStatus::Unknown)
+    );
+}
+
+#[test]
+fn explicit_cyclic_or_missing_crate_inputs_fail_without_panicking() {
+    let dir = project(&[("src/lib.rs", "fn entry() {}")]);
+    let (source, mut context) = capture(dir.path(), &CaptureOptions::default()).unwrap();
+    context.crates[0]
+        .dependencies
+        .insert("self_cycle".into(), "src/lib.rs".into());
+    assert!(
+        analyze(source.clone(), context.clone(), AnalysisLevel::Semantic)
+            .unwrap_err()
+            .to_string()
+            .contains("dependency graph")
+    );
+    context.crates[0].dependencies.clear();
+    context.crates[0].root_file = "missing.rs".into();
+    assert!(analyze(source, context, AnalysisLevel::Semantic).is_err());
+}
+
+#[test]
+fn shared_source_in_distinct_crate_instances_is_not_conflated() {
+    let dir = project(&[
+        (
+            "src/lib.rs",
+            "mod common; pub fn target() {} pub fn library() { common::entry(); }",
+        ),
+        (
+            "src/main.rs",
+            "mod common; fn target() {} fn main() { common::entry(); }",
+        ),
+        ("src/common.rs", "pub fn entry() { crate::target(); }"),
+    ]);
+    let facts = facts(&dir, AnalysisLevel::Semantic);
+    assert_eq!(definition(&facts, "entry").cfg_status, CfgStatus::Unknown);
+    assert!(targets(&facts, "entry").is_empty());
+    assert!(targets(&facts, "library").is_empty());
+    assert!(targets(&facts, "main").is_empty());
+    assert!(
+        facts
+            .coverage
+            .limitations
+            .iter()
+            .any(|text| text.contains("multiple crate instances"))
+    );
+}
+
+#[test]
+fn rejects_oversized_or_ambiguous_source_inputs_before_database_loading() {
+    let dir = project(&[("src/lib.rs", "fn entry() {}")]);
+    let (mut source, context) = capture(dir.path(), &CaptureOptions::default()).unwrap();
+    source.files.push(source.files[0].clone());
+    assert!(
+        analyze(source.clone(), context.clone(), AnalysisLevel::Syntax)
+            .unwrap_err()
+            .to_string()
+            .contains("duplicate source")
+    );
+    source.files.pop();
+    source.files[0].text = " ".repeat(4 * 1024 * 1024 + 1);
+    assert!(
+        analyze(source, context, AnalysisLevel::Semantic)
+            .unwrap_err()
+            .to_string()
+            .contains("byte budget")
+    );
 }

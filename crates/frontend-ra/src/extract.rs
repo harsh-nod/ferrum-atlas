@@ -1,4 +1,4 @@
-use crate::{AnalysisLevel, PRODUCER, database};
+use crate::{AnalysisLevel, PRODUCER, configuration::Configurations, database};
 use anyhow::{Result, ensure};
 use atlas_model::*;
 use ra_ap_hir::{Function, ModuleDef, PathResolution, Semantics};
@@ -8,13 +8,15 @@ use ra_ap_syntax::{
     ast::{self, HasName},
 };
 use ra_ap_vfs::FileId as RaFileId;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 struct Item {
     definition: Definition,
     node: SyntaxNode,
     body: Option<SyntaxNode>,
     function: Option<Function>,
+    configuration: String,
+    ambiguous_crate: bool,
 }
 
 pub(super) fn analyze(
@@ -22,8 +24,11 @@ pub(super) fn analyze(
     context: BuildContext,
     level: AnalysisLevel,
 ) -> Result<FactBatch> {
-    let db = database::load(&source, &context)?;
-    ra_ap_hir::attach_db(&db, || extract(source, context, level, &db))
+    let configurations = Configurations::new(&source, &context)?;
+    let db = database::load(&source, &context, &configurations)?;
+    ra_ap_hir::attach_db(&db, || {
+        extract(source, context, level, &db, &configurations)
+    })
 }
 
 fn extract(
@@ -31,6 +36,7 @@ fn extract(
     context: BuildContext,
     level: AnalysisLevel,
     db: &RootDatabase,
+    configurations: &Configurations,
 ) -> Result<FactBatch> {
     let sema = Semantics::new(db);
     let mut coverage = context.coverage.clone();
@@ -49,13 +55,38 @@ fn extract(
     let mut diagnostics = Vec::new();
     let mut items = Vec::<Item>::new();
     let mut item_indices = HashMap::<SyntaxNode, usize>::new();
-    let mut has_cfg = false;
+    let mut has_unknown_cfg = false;
     for (index, file) in source.files.iter().enumerate() {
         ensure!(
             file.text.len() <= 4 * 1024 * 1024,
             "analysis file byte budget exceeded"
         );
         let syntax = sema.parse_guess_edition(RaFileId::from_raw(index as u32));
+        let crate_roots = sema
+            .file_to_module_defs(RaFileId::from_raw(index as u32))
+            .map(|module| {
+                source.files[module.krate(db).root_file(db).index() as usize]
+                    .path
+                    .clone()
+            })
+            .collect::<BTreeSet<_>>();
+        let ambiguous_crate = crate_roots.len() > 1;
+        let configuration = if crate_roots.len() == 1 {
+            crate_roots.into_iter().next().unwrap()
+        } else {
+            String::new()
+        };
+        if ambiguous_crate {
+            add_gap(
+                &mut coverage,
+                UnknownReason::CfgUnknown,
+                "A source file belongs to multiple crate instances; instance-specific definitions and calls remain unknown.",
+            );
+        }
+        let settings = configurations
+            .roots
+            .get(&configuration)
+            .unwrap_or(&configurations.fallback);
         for error in syntax
             .syntax()
             .descendants()
@@ -84,8 +115,12 @@ fn extract(
                 .simple_name()
                 .map(|name| name.to_string())
                 .unwrap_or_default();
-            if path == "cfg" || path == "cfg_attr" {
-                has_cfg = true;
+            if !configuration.is_empty()
+                && matches!(path.as_str(), "cfg" | "cfg_attr")
+                && settings.attr_status(&attr) == CfgStatus::Unknown
+                && settings.node_status(attr.syntax()) != CfgStatus::Inactive
+            {
+                has_unknown_cfg = true;
             }
             if path == "derive"
                 || !matches!(
@@ -190,6 +225,10 @@ fn extract(
                 span: span(file, range),
                 body_span: body.as_ref().map(|body| span(file, body.text_range())),
                 cfg,
+                cfg_status: match settings.node_status(&node) {
+                    CfgStatus::Active if configuration.is_empty() => CfgStatus::Unknown,
+                    status => status,
+                },
                 visibility: node
                     .children()
                     .find_map(ast::Visibility::cast)
@@ -203,14 +242,16 @@ fn extract(
                 node,
                 body,
                 function,
+                configuration: configuration.clone(),
+                ambiguous_crate,
             });
         }
     }
-    if has_cfg {
+    if has_unknown_cfg {
         add_gap(
             &mut coverage,
             UnknownReason::CfgUnknown,
-            "Raw cfg is retained. Conditional source requires a fully resolved per-crate configuration; semantic call targets are withheld for this snapshot.",
+            "Unknown custom/target cfg or unresolved dependency features remain three-state. Semantic call targets are withheld until those active conditions have known inputs.",
         );
     }
     if !diagnostics.is_empty() {
@@ -224,7 +265,9 @@ fn extract(
         .iter()
         .filter_map(|item| {
             item.function.map(|function| {
-                let target = if item
+                let target = if item.ambiguous_crate {
+                    Err(UnknownReason::CfgUnknown)
+                } else if item
                     .node
                     .ancestors()
                     .any(|node| ast::Trait::can_cast(node.kind()))
@@ -248,6 +291,13 @@ fn extract(
     let mut evidence = Vec::new();
     let mut flows = Vec::new();
     for item in &mut items {
+        if item.definition.cfg_status == CfgStatus::Inactive {
+            continue;
+        }
+        let settings = configurations
+            .roots
+            .get(&item.configuration)
+            .unwrap_or(&configurations.fallback);
         let Some(body) = &item.body else {
             continue;
         };
@@ -268,6 +318,9 @@ fn extract(
             .descendants()
             .filter(|node| belongs_to_body(node, &item.node))
         {
+            if settings.node_status(&node) == CfgStatus::Inactive {
+                continue;
+            }
             let flow_kind = match node.kind() {
                 SyntaxKind::IF_EXPR
                 | SyntaxKind::MATCH_EXPR
@@ -331,7 +384,7 @@ fn extract(
                 unknown(UnknownReason::MacroUnavailable, &label)
             } else if level == AnalysisLevel::Syntax {
                 unknown(UnknownReason::SyntaxOnly, &label)
-            } else if has_cfg {
+            } else if has_unknown_cfg || item.ambiguous_crate {
                 unknown(UnknownReason::CfgUnknown, &label)
             } else {
                 resolve(&sema, call, method, &function_ids, &label)
@@ -366,7 +419,7 @@ fn extract(
                 kind: if mac.is_some() {
                     "macro_invocation"
                 } else {
-                    "call"
+                    "calls"
                 }
                 .into(),
                 span: call_span,

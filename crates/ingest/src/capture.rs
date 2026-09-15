@@ -58,7 +58,7 @@ fn capture_with_hook(
     between_passes: impl FnOnce(),
 ) -> Result<(SourceSnapshot, BuildContext)> {
     ensure!(
-        options.max_files > 0 && options.max_file_bytes > 0,
+        options.max_files > 0 && options.max_file_bytes > 0 && options.max_total_bytes > 0,
         "capture limits must be positive"
     );
     let root = open(
@@ -67,11 +67,23 @@ fn capture_with_hook(
         Mode::empty(),
     )
     .with_context(|| format!("open source root {}", workspace.display()))?;
+    let root_metadata = fstat(&root)?;
     let first = scan(&root, options)?;
     between_passes();
     ensure!(
         first == scan(&root, options)?,
         "source changed during capture; retry with a stable working tree"
+    );
+    let final_root = open(
+        workspace,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?;
+    let final_metadata = fstat(&final_root)?;
+    ensure!(
+        root_metadata.st_dev == final_metadata.st_dev
+            && root_metadata.st_ino == final_metadata.st_ino,
+        "source root changed during capture"
     );
     ensure!(
         !first.files.is_empty(),
@@ -128,7 +140,18 @@ fn scan_dir(
     depth: usize,
 ) -> Result<()> {
     ensure!(depth <= 128, "source directory depth exceeds 128");
-    let mut entries = Dir::read_from(&directory)?.collect::<std::result::Result<Vec<_>, _>>()?;
+    let mut entries = Vec::new();
+    for entry in Dir::read_from(&directory)? {
+        let entry = entry?;
+        if matches!(entry.file_name().to_bytes(), b"." | b"..") {
+            continue;
+        }
+        ensure!(
+            capture.entries.saturating_add(entries.len()) < options.max_files.saturating_mul(32),
+            "directory entry budget exhausted"
+        );
+        entries.push(entry);
+    }
     entries.sort_by(|a, b| a.file_name().to_bytes().cmp(b.file_name().to_bytes()));
     for entry in entries {
         let bytes = entry.file_name().to_bytes();
@@ -204,10 +227,14 @@ fn scan_dir(
                     before.st_size >= 0 && before.st_size as u64 <= options.max_file_bytes,
                     "file exceeds byte budget: {path}"
                 );
+                ensure!(
+                    capture.bytes.saturating_add(before.st_size as u64) <= options.max_total_bytes,
+                    "total source byte budget exhausted"
+                );
                 let mut file = File::from(fd);
                 let mut content = Vec::new();
                 (&mut file)
-                    .take(options.max_file_bytes + 1)
+                    .take(options.max_file_bytes.saturating_add(1))
                     .read_to_end(&mut content)?;
                 ensure!(
                     content.len() as u64 <= options.max_file_bytes,
@@ -280,6 +307,48 @@ mod tests {
         assert_eq!(first.0.id, second.0.id);
         assert_ne!(first.1.id, second.1.id);
         assert_eq!(second.1.target, "custom-firmware");
+    }
+    #[test]
+    fn root_replacement_and_directory_entry_limits_are_detected() {
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("project");
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("lib.rs"), "fn first() {}").unwrap();
+        let result = capture_with_hook(&root, &CaptureOptions::default(), || {
+            fs::rename(&root, parent.path().join("old")).unwrap();
+            fs::create_dir(&root).unwrap();
+            fs::write(root.join("lib.rs"), "fn second() {}").unwrap();
+        });
+        assert!(result.unwrap_err().to_string().contains("root changed"));
+        for number in 0..100 {
+            fs::write(root.join(format!("unrelated-{number}.txt")), "").unwrap();
+        }
+        assert!(
+            capture(
+                &root,
+                &CaptureOptions {
+                    max_files: 2,
+                    ..Default::default()
+                }
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("directory entry budget")
+        );
+    }
+
+    #[test]
+    fn body_edits_keep_context_and_manifest_edits_change_it() {
+        let dir = project();
+        let first = capture(dir.path(), &CaptureOptions::default()).unwrap();
+        fs::write(dir.path().join("src/lib.rs"), "pub fn changed() {}\n").unwrap();
+        let second = capture(dir.path(), &CaptureOptions::default()).unwrap();
+        assert_ne!(first.0.id, second.0.id);
+        assert_eq!(first.1.id, second.1.id);
+        fs::write(dir.path().join("Cargo.lock"), "version = 4\n").unwrap();
+        let third = capture(dir.path(), &CaptureOptions::default()).unwrap();
+        assert_ne!(second.0.id, third.0.id);
+        assert_ne!(second.1.id, third.1.id);
     }
     #[test]
     fn detects_mutation_addition_and_removal_between_passes() {

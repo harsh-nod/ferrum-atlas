@@ -1,10 +1,10 @@
+use crate::configuration::Configurations;
 use anyhow::{Context, Result, anyhow};
 use atlas_model::{BuildContext, SourceSnapshot};
 use ra_ap_base_db::{
     CrateGraphBuilder, CrateName, CrateOrigin, CrateWorkspaceData, DependencyBuilder, Env,
     SourceRoot,
 };
-use ra_ap_cfg::CfgOptions;
 use ra_ap_ide_db::{ChangeWithProcMacros, RootDatabase};
 use ra_ap_intern::Symbol;
 use ra_ap_span::Edition;
@@ -12,7 +12,11 @@ use ra_ap_vfs::{AbsPathBuf, FileId, VfsPath, file_set::FileSet};
 use std::collections::BTreeMap;
 use triomphe::Arc;
 
-pub(super) fn load(source: &SourceSnapshot, context: &BuildContext) -> Result<RootDatabase> {
+pub(super) fn load(
+    source: &SourceSnapshot,
+    context: &BuildContext,
+    configurations: &Configurations,
+) -> Result<RootDatabase> {
     let mut change = ChangeWithProcMacros::default();
     let mut files = FileSet::default();
     let mut ids = BTreeMap::new();
@@ -33,17 +37,7 @@ pub(super) fn load(source: &SourceSnapshot, context: &BuildContext) -> Result<Ro
             .edition
             .parse::<Edition>()
             .map_err(|err| anyhow!("invalid edition: {err}"))?;
-        let mut cfg = CfgOptions::default();
-        for (key, value) in &context.cfg {
-            if let Some(value) = value {
-                cfg.insert_key_value(Symbol::intern(key), Symbol::intern(value));
-            } else {
-                cfg.insert_atom(Symbol::intern(key));
-            }
-        }
-        for feature in &context.features {
-            cfg.insert_key_value(Symbol::intern("feature"), Symbol::intern(feature));
-        }
+        let cfg = configurations.roots[&krate.root_file].options();
         let name = CrateName::normalize_dashes(&krate.name);
         let id = graph.add_crate_root(
             root,

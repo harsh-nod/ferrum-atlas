@@ -6,6 +6,7 @@ license.workspace = true
 [dependencies]
 atlas-model.workspace = true
 anyhow.workspace = true
+toml.workspace = true
 ra_ap_syntax.workspace = true
 ra_ap_hir.workspace = true
 ra_ap_ide_db.workspace = true
