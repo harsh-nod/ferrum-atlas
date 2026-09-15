@@ -303,7 +303,7 @@ fn watch_holds_index_lease_and_ctrl_c_kills_even_a_stopped_worker() {
 fn request_deadline_kills_worker_and_preserves_last_valid_snapshot() {
     let (_temp, _workspace, root) = fixture();
     let store = Store::open(&root).unwrap();
-    let process = watch(&root, Some(2), 500, 2);
+    let process = watch(&root, Some(2), 500, 10);
     wait_until(|| head(&store).is_some(), "first watch snapshot missing");
     let previous = head(&store);
     let mut worker = None;

@@ -205,16 +205,12 @@ pub(super) fn run(mut config: WatchConfig, cancelled: Arc<AtomicBool>) -> Result
                     Status::Changed => {
                         let batch = batch.context("changed response has no facts")?;
                         progress(config.job.progress_file.as_deref(), JobStage::Validation)?;
+                        let fact_digest = atlas_store::fact_digest(&batch);
                         let already_published = expected_head
                             .as_ref()
                             .map(|head| store.snapshot(head))
                             .transpose()?
-                            .is_some_and(|snapshot| {
-                                snapshot.source_id == batch.source.id
-                                    && snapshot.context.id == batch.context.id
-                                    && snapshot.producer == batch.producer
-                                    && snapshot.coverage == batch.coverage
-                            });
+                            .is_some_and(|snapshot| snapshot.fact_digest == fact_digest);
                         if already_published {
                             report.unchanged += 1;
                         } else {
