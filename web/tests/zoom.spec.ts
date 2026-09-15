@@ -23,7 +23,9 @@ test("genuine Chromium 200 percent browser zoom preserves source and navigation"
   try {
     const page = context.pages()[0];
     await mockApi(page);
-    await page.goto(`http://127.0.0.1:${process.env.ATLAS_WEB_TEST_PORT ?? "4173"}/#token=test-token`);
+    await page.goto(
+      `http://127.0.0.1:${process.env.ATLAS_WEB_TEST_PORT ?? "4173"}/#token=test-token`,
+    );
     await expect(page.getByTestId("source-content")).toContainText("fn main()");
     const zoom = await page.evaluate(() => ({
       dpr: devicePixelRatio,
