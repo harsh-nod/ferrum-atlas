@@ -297,6 +297,7 @@ impl Store {
         transaction.execute("INSERT INTO heads VALUES(?1,?2) ON CONFLICT(name) DO UPDATE SET snapshot_id=excluded.snapshot_id", params![head,id.0])?;
         injected_failure(fail_after, 4)?;
         transaction.commit()?;
+        injected_failure(fail_after, 5)?;
         Ok(snapshot)
     }
 
@@ -438,6 +439,14 @@ impl Store {
 }
 
 fn injected_failure(fail_after: Option<u8>, stage: u8) -> Result<()> {
+    #[cfg(test)]
+    if fail_after == Some(stage)
+        && std::env::var("ATLAS_TEST_CRASH_STAGE").ok().as_deref()
+            == Some(stage.to_string().as_str())
+    {
+        // Abrupt child termination deliberately bypasses Rust cleanup and SQLite rollback.
+        std::process::exit(77);
+    }
     if fail_after == Some(stage) {
         Err(Error::Unavailable("injected publication failure".into()))
     } else {

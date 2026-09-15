@@ -196,6 +196,53 @@ fn every_failed_publication_boundary_keeps_old_head_visible() {
 }
 
 #[test]
+fn publication_crash_child() {
+    let Ok(root) = std::env::var("ATLAS_TEST_CRASH_ROOT") else {
+        return;
+    };
+    let stage = std::env::var("ATLAS_TEST_CRASH_STAGE")
+        .unwrap()
+        .parse::<u8>()
+        .unwrap();
+    let store = Store::open(root).unwrap();
+    let expected = store.head("main").unwrap();
+    store
+        .publish_inner(&batch("two"), "main", expected.as_ref(), Some(stage))
+        .unwrap();
+    panic!("publication did not reach injected crash boundary");
+}
+
+#[test]
+fn abrupt_process_death_exposes_only_whole_generations() {
+    for stage in 1..=5 {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::open(temp.path()).unwrap();
+        let before = store.publish(&batch("one"), "main", None).unwrap();
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "tests::publication_crash_child"])
+            .env("ATLAS_TEST_CRASH_ROOT", temp.path())
+            .env("ATLAS_TEST_CRASH_STAGE", stage.to_string())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert_eq!(status.code(), Some(77), "stage {stage}");
+        let recovered = Store::open(temp.path()).unwrap();
+        assert!(recovered.integrity_check().unwrap().valid, "stage {stage}");
+        let current = recovered.head("main").unwrap().unwrap();
+        if stage < 5 {
+            assert_eq!(current, before.id);
+            assert_eq!(recovered.snapshots().unwrap().len(), 1);
+        } else {
+            assert_ne!(current, before.id);
+            assert_eq!(recovered.snapshot(&current).unwrap().revision, "two");
+            assert_eq!(recovered.snapshots().unwrap().len(), 2);
+        }
+        assert!(recovered.reader(&before.id).is_ok());
+    }
+}
+
+#[test]
 fn concurrent_writers_use_compare_and_swap() {
     let temp = tempfile::tempdir().unwrap();
     let store = Store::open(temp.path()).unwrap();
