@@ -102,7 +102,7 @@ Commands and resource details are in [benchmarks/README.md](../../benchmarks/REA
 The manifest and standalone Cargo lock make future runs reproducible from a clean
 candidate commit. `validate.py report` recomputes smoke percentiles, checks raw
 sample counts/resources/category counts, and rejects unearned tier/p99 claims.
-Thirteen automated Python tests cover rejection logic, useful versus empty
+Fourteen automated Python tests cover rejection logic, useful versus empty
 responses, and real runner deadline,
 RSS/CPU collection, executable freezing, and symlink-safe disk accounting.
 
@@ -161,3 +161,49 @@ cache/corruption/cancellation/identity/symlink regressions. The earlier binary's
 source provenance and shared-host conditions prevent a controlled speedup claim.
 This follow-up demonstrates useful warm responses for this generated workload,
 not a tier, real-corpus semantic, optimized-build, or sustained-load qualification.
+
+## Real Corpus Prepared-Query Follow-Up
+
+The [fresh regex index and cold CLI samples](../../benchmarks/reports/regex-cached-20260915.json)
+and [separate prepared-process samples](../../benchmarks/reports/regex-cached-warm-20260915.json)
+use the same reviewed public commit and read-only configuration as the initial
+real run. The CLI was built with Rust 1.97.1, default debug profile, from clean
+commit `18fc4a989c6edf5b92b16d84f6648397ca92578d`; frozen SHA-256 is
+`7b8dc7b52af8108abe224af018210493602d410090e7220652139fea709031ba`.
+The root build used a shared development target, not a hermetic rebuild. The
+runner independently verified and copied the frozen executable before each run.
+
+The new index contains 54,558 records: 222 source files, 8,361 definitions,
+20,668 relations, 20,668 evidence records, and 4,639 source-flow records. All
+20,668 relations remain unresolved: 17,618 `cfg_unknown` and 3,050
+`macro_unavailable`. Useful source/symbol/unknown-frontier responses are not
+evidence of resolved-call precision or complete semantic analysis.
+
+| Workload | p50 | p95 | Result in all 30 samples |
+| --- | ---: | ---: | --- |
+| Fresh-process CLI prefix `parse` | 4,293.33 ms | 5,034.63 ms | 50 items, paginated |
+| Fresh-process CLI one-hop graph | 4,529.20 ms | 5,923.26 ms | 1 node / 97 edges, not truncated |
+| Prepared-process empty-prefix search | 28.53 ms | 38.35 ms | 50 items, paginated |
+
+All 90 query samples returned useful content with no failed or deadline samples.
+The first two rows include cold checksum preparation and CLI startup on every
+sample. The third row is a different search workload measured inside one process,
+after a separately recorded 4,545.09 ms preparation. Its entire process took
+5,508.03 ms, 5.27 user + 0.18 system CPU seconds, and 23.5 MiB sampled peak RSS.
+These rows are not interchangeable HTTP latency or controlled speedup evidence.
+
+Indexing took 165.12 s, 116.55 user + 38.71 system CPU seconds, and 190.82 MiB
+sampled peak process-tree RSS. The fresh store occupied 79,278,380 bytes and its
+scratch directory, including frozen executable, occupied 202,551,681 bytes. No
+resource or outer wall budget was exceeded. The largest real Rust file was
+266,293 bytes (`regex-syntax/src/unicode_tables/property_bool.rs`); this corpus
+does not establish bounded cancellation for multi-megabyte individual sources.
+The synthetic source-window follow-up above likewise measures only a 1,900-byte
+returned window, not arbitrary giant-source responsiveness.
+
+Reproduction uses the committed runner's `real` mode with the pinned corpus,
+fresh scratch, frozen CLI and 30 samples, followed by `warm` using the same scratch,
+CLI and new index report. The warm report links the exact index-report SHA-256.
+No external repository build scripts or tools were executed. Optimized builds,
+controlled cache states, resolved-call workloads, concurrent service load,
+equivalent baselines and real participant sessions remain unqualified gates.
