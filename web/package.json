@@ -1,0 +1,35 @@
+{
+  "name": "ferrum-atlas-viewer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.12.0" },
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc --noEmit && vite build",
+    "check": "tsc --noEmit",
+    "test": "playwright test",
+    "test:ui": "playwright test --ui"
+  },
+  "dependencies": {
+    "@codemirror/lang-rust": "6.0.2",
+    "@codemirror/language": "6.12.4",
+    "@codemirror/state": "6.7.4",
+    "@codemirror/view": "6.43.11",
+    "cytoscape": "3.34.3",
+    "elkjs": "0.12.0",
+    "lucide-react": "1.46.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0",
+    "@types/cytoscape": "3.31.0",
+    "@types/node": "26.5.1",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.1.1",
+    "typescript": "7.0.2",
+    "vite": "8.3.0"
+  }
+}
