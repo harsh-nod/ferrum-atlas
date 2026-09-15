@@ -41,10 +41,14 @@ CARGO_TARGET_DIR="$SCRATCH/harness-target" \
   cargo build --locked --manifest-path benchmarks/stress/Cargo.toml -j 1
 python3 benchmarks/run.py real --scratch "$SCRATCH" --corpus "$SCRATCH/regex" \
   --atlas target/debug/atlas --samples 30 --output "$SCRATCH/real-report.json"
+python3 benchmarks/run.py warm --scratch "$SCRATCH" --atlas target/debug/atlas \
+  --index-report "$SCRATCH/real-report.json" --samples 30 \
+  --output "$SCRATCH/real-warm-report.json"
 python3 benchmarks/run.py synthetic --scratch "$SCRATCH" \
   --binary "$SCRATCH/harness-target/debug/atlas-index-stress" --samples 30 \
   --output "$SCRATCH/synthetic-report.json"
 python3 benchmarks/validate.py report "$SCRATCH/real-report.json"
+python3 benchmarks/validate.py report "$SCRATCH/real-warm-report.json"
 python3 benchmarks/validate.py report "$SCRATCH/synthetic-report.json"
 python3 -m unittest discover -s benchmarks -p 'test_*.py'
 ```
@@ -67,7 +71,24 @@ GNU time records CPU seconds, kernel maximum single-process RSS, and filesystem
 input/output operation counters (not byte throughput). RSS sampling can miss short
 peaks; no process-tree hard-memory cgroup claim is made.
 
-The real workload measures CLI startup plus query execution. The synthetic
+The real workload measures CLI startup, explicit cold checksum preparation, and
+query execution in a fresh process for every sample. The optional `warm` mode
+uses the same executable digest and snapshot in one CLI process, records cold
+`preparation_ms` separately, and records 30 warm empty-prefix/top-50 search
+samples. Its raw report is separate from the end-to-end prefix-`parse` and graph
+report; those workloads must not be conflated.
+
+Verification caching is process-local and bounded to 256 immutable identities.
+Publication seeds it in the publishing process, but a new CLI process does not
+inherit that cache. Explicit preparation verifies a cold snapshot before the
+interactive deadline begins; cancellation remains effective while preparing.
+File changes invalidate cached verification. The cache trusts local filesystem
+identity/change metadata, not a hostile privileged filesystem. Warm timings do
+not measure cold verification, and prepared status does not prevent later cache
+eviction or object changes. Record the clean build commit and digest for each
+candidate; never infer binary provenance from an unrelated harness worktree.
+
+The synthetic
 workload invokes the real immutable store and query engine in process, separately
 timing publication, reader checksum/open, already-open search, and adjacency.
 The generated 100,002 records are not frontend-extracted semantic claims about

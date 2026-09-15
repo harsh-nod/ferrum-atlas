@@ -271,14 +271,51 @@ def synthetic(args):
     return report
 
 
+def warm(args):
+    previous = json.loads(args.index_report.read_text())
+    if previous.get("kind") != "real_public_corpus" or not previous.get("index", {}).get("ok"):
+        raise ValueError("warm measurement requires a successful real-corpus index report")
+    binary = freeze_binary(args.atlas, args.scratch)
+    if digest(binary) != previous.get("binary_sha256"):
+        raise ValueError("warm and cold measurements must use identical executable bytes")
+    snapshot = previous["snapshot"]
+    report = base_report("real_public_corpus", binary)
+    for key in ("corpus", "facts_count", "fact_counts", "unknown_relations", "unknowns_by_reason", "store_bytes"):
+        report[key] = previous[key]
+    report["index_report_sha256"] = digest(args.index_report)
+    report["snapshot_id"] = snapshot["id"]
+    store = args.scratch.resolve() / f"real-{args.level}-store"
+    measured, output = bounded_process([binary, "--store", store, "benchmark", "--snapshot", snapshot["id"], "--samples", str(args.samples)], args.scratch, 45)
+    report["process"] = measured
+    report["workloads"] = []
+    if not measured["ok"]:
+        return report
+    body = json.loads(output)
+    if body["snapshot"]["id"] != snapshot["id"] or body["snapshot"]["fact_digest"] != snapshot["fact_digest"]:
+        raise ValueError("warm benchmark changed the pinned snapshot")
+    if len(body["samples_ms"]) != args.samples or len(body["sample_results"]) != args.samples:
+        raise ValueError("native benchmark omitted sample outcomes")
+    samples = [{"wall_ms": elapsed, "ok": result["ok"],
+                "result": {"items": result.get("items", 0), "partial": result.get("truncated", False),
+                           "deadline": result.get("deadline_reached", False), "coverage": result.get("coverage")},
+                **({"error": result["error_code"]} if "error_code" in result else {})}
+               for elapsed, result in zip(body["samples_ms"], body["sample_results"])]
+    report["preparation_ms"] = body["preparation_ms"]
+    report["native_report"] = body
+    report["workloads"] = [summarize("prepared_in_process_symbol_search", samples,
+                                    "Query-only time in one CLI process after explicit cold preparation; empty prefix, top 50. Preparation and total process timing are separate.")]
+    return report
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=["real", "synthetic"])
+    parser.add_argument("mode", choices=["real", "synthetic", "warm"])
     parser.add_argument("--scratch", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--atlas", type=Path)
     parser.add_argument("--binary", type=Path)
     parser.add_argument("--corpus", type=Path)
+    parser.add_argument("--index-report", type=Path)
     parser.add_argument("--level", choices=["syntax", "semantic"], default="semantic")
     parser.add_argument("--samples", type=int, default=30)
     args = parser.parse_args()
@@ -287,7 +324,11 @@ def main():
     args.scratch.mkdir(parents=True, exist_ok=True)
     if ROOT.parent in args.scratch.resolve().parents or args.scratch.resolve() == ROOT.parent:
         parser.error("scratch must be outside the public repository")
-    report = real(args) if args.mode == "real" else synthetic(args)
+    if args.mode in {"real", "warm"} and args.atlas is None:
+        parser.error("real/warm mode requires --atlas")
+    if args.mode == "warm" and args.index_report is None:
+        parser.error("warm mode requires --index-report")
+    report = {"real": real, "synthetic": synthetic, "warm": warm}[args.mode](args)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("x") as output:
         json.dump(report, output, indent=2)
