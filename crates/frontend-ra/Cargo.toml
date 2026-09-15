@@ -13,6 +13,8 @@ ra_ap_base_db.workspace = true
 ra_ap_cfg.workspace = true
 ra_ap_vfs.workspace = true
 ra_ap_span.workspace = true
+triomphe = "=0.1.15"
+ra_ap_intern = "=0.0.349"
 [dev-dependencies]
 atlas-ingest.workspace = true
 tempfile.workspace = true
