@@ -7,6 +7,50 @@ on:
 permissions:
   contents: read
 jobs:
+  pinned-compiler:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      CARGO_BUILD_JOBS: 2
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.22.1
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            ~/.cargo/registry
+            target
+            adapters/rustc/target
+          key: compiler-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'adapters/rustc/Cargo.lock', 'adapters/rustc/rust-toolchain.toml') }}
+      - name: Exact compiler adapter tests
+        working-directory: adapters/rustc
+        run: |
+          rustup show
+          cargo fmt --all --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked
+      - name: Real compiler import workflow
+        run: |
+          ATLAS_RUSTC="$PWD/adapters/rustc/target/debug/atlas-rustc" cargo test --locked -p ferrum-atlas --test compiler_workflow -- --ignored
+      - name: Build browser
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+          npx playwright install --with-deps chromium
+      - name: Real compiler to browser workflow
+        working-directory: web
+        run: ATLAS_RUSTC="$PWD/../adapters/rustc/target/debug/atlas-rustc" npx playwright test tests/live.spec.ts
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: compiler-browser-evidence
+          path: web/test-results/
+          if-no-files-found: ignore
   contracts-and-workflows:
     runs-on: ubuntu-24.04
     timeout-minutes: 35

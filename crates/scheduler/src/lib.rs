@@ -139,9 +139,32 @@ impl Scheduler {
         } else {
             vec![]
         };
+        let mut ids = std::collections::BTreeSet::new();
         for job in &mut jobs {
             validate_request(&job.request)?;
-            ensure!(job.events.len() <= MAX_EVENTS, "invalid event history");
+            ensure!(
+                job.id.starts_with("job:") && job.id.len() <= 160 && ids.insert(job.id.clone()),
+                "invalid or duplicate job identity"
+            );
+            ensure!(
+                job.created_ms.parse::<u64>().is_ok()
+                    && job
+                        .message
+                        .as_ref()
+                        .is_none_or(|message| message.len() <= 4096),
+                "invalid job metadata"
+            );
+            ensure!(
+                job.events.len() <= MAX_EVENTS
+                    && job.events.iter().all(|event| event.sequence > 0
+                        && event.sequence < 1_000_000
+                        && event.timestamp_ms.parse::<u64>().is_ok())
+                    && job
+                        .events
+                        .windows(2)
+                        .all(|events| events[0].sequence < events[1].sequence),
+                "invalid event history"
+            );
             if !job.status.terminal() {
                 job.status = JobStatus::Failed;
                 job.message = Some("Service restarted before job completion; inspect the published head before retrying.".into());

@@ -187,6 +187,49 @@ fn contended_publication_never_holds_job_mutex_or_waits_unbounded() {
 }
 
 #[test]
+fn malformed_journals_reject_duplicate_identities_and_unreplayable_events() {
+    let record = JobRecord {
+        id: "job:fixture".into(),
+        request: request("default"),
+        status: JobStatus::Failed,
+        created_ms: "1".into(),
+        snapshot_id: None,
+        message: None,
+        events: vec![JobEvent {
+            sequence: 1,
+            timestamp_ms: "1".into(),
+            stage: JobStage::Finished,
+            status: JobStatus::Failed,
+        }],
+    };
+    let mut cases = vec![vec![record.clone(), record.clone()]];
+    let mut overflow = record.clone();
+    overflow.events[0].sequence = u32::MAX;
+    cases.push(vec![overflow]);
+    let mut duplicate_sequence = record.clone();
+    duplicate_sequence
+        .events
+        .push(duplicate_sequence.events[0].clone());
+    cases.push(vec![duplicate_sequence]);
+    let mut malformed_time = record.clone();
+    malformed_time.created_ms = "not-an-integer".into();
+    cases.push(vec![malformed_time]);
+    let mut oversized = record;
+    oversized.message = Some("x".repeat(4097));
+    cases.push(vec![oversized]);
+    for jobs in cases {
+        let temp = tempfile::tempdir().unwrap();
+        let exe = executable(&temp, "exit 23");
+        fs::create_dir(temp.path().join("jobs")).unwrap();
+        let path = temp.path().join("jobs/journal.json");
+        let bytes = serde_json::to_vec(&Journal { version: 1, jobs }).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        assert!(Scheduler::start(temp.path(), &exe, SchedulerConfig::default()).is_err());
+        assert_eq!(fs::read(path).unwrap(), bytes);
+    }
+}
+
+#[test]
 fn dropping_last_handle_kills_process_group_and_keeps_history_private() {
     let temp = tempfile::tempdir().unwrap();
     let pid = temp.path().join("pid");
