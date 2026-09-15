@@ -52,6 +52,19 @@ export function DataflowView({
       ),
   );
   const data = result.data?.analysis;
+  const partial = Boolean(
+    data &&
+    (data.envelope.truncated ||
+      data.envelope.deadline_reached ||
+      data.envelope.cancelled),
+  );
+  const recordsWithheld = Boolean(
+    partial &&
+    data &&
+    !data.reachable_blocks.length &&
+    !data.definitions.length &&
+    !data.uses.length,
+  );
   const uses =
     data?.uses.filter(
       (use) => !selected.local || use.local === Number(selected.local),
@@ -81,15 +94,17 @@ export function DataflowView({
         <>
           <div className="analysis-section-heading">
             <span
-              className={`badge ${data.fixed_point ? "complete" : "partial"}`}
+              className={`badge ${data.fixed_point && !partial ? "complete" : "partial"}`}
             >
               {data.fixed_point
                 ? "Fixed point reached"
                 : "Fixed point unavailable"}
             </span>
             <span>
-              {data.iterations} iterations / {data.reachable_blocks.length}{" "}
-              reachable blocks
+              {data.iterations} iterations /{" "}
+              {recordsWithheld
+                ? "reachable-block records unavailable"
+                : `${data.reachable_blocks.length} returned reachable block${data.reachable_blocks.length === 1 ? "" : "s"}`}
             </span>
           </div>
           <details>
@@ -102,14 +117,18 @@ export function DataflowView({
               ))}
             </ul>
           </details>
-          {(data.envelope.truncated ||
-            data.envelope.deadline_reached ||
-            data.envelope.cancelled) && (
+          {partial && (
             <p role="status" className="badge partial">
               Partial dataflow result
             </p>
           )}
-          {data.fixed_point && (
+          {recordsWithheld && (
+            <p className="muted">
+              Dataflow records were withheld; reachability and memory-effect
+              totals are unavailable.
+            </p>
+          )}
+          {data.fixed_point && !recordsWithheld && (
             <>
               <label className="dataflow-local">
                 Local
@@ -227,7 +246,11 @@ export function DataflowView({
           )}
           <details>
             <summary>
-              Unknown memory effects ({data.unknown_memory_effects.length})
+              Unknown memory effects (
+              {recordsWithheld
+                ? "unavailable"
+                : `${data.unknown_memory_effects.length} returned records`}
+              )
             </summary>
             <ul>
               {data.unknown_memory_effects
