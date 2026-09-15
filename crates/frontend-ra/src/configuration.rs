@@ -130,6 +130,67 @@ fn has_dependency_overrides(manifest: &toml::Value) -> bool {
 }
 
 impl Settings {
+    pub fn has_attribute_macro(&self, node: &SyntaxNode) -> bool {
+        node.ancestors()
+            .flat_map(|node| {
+                node.children()
+                    .filter_map(ast::Attr::cast)
+                    .collect::<Vec<_>>()
+            })
+            .filter_map(|attr| attr.meta())
+            .any(|meta| self.attribute_unavailable(meta))
+    }
+
+    fn attribute_unavailable(&self, meta: ast::Meta) -> bool {
+        match meta {
+            ast::Meta::CfgMeta(_) => false,
+            ast::Meta::CfgAttrMeta(meta) => match meta
+                .cfg_predicate()
+                .map(|predicate| self.predicate(predicate))
+                .unwrap_or(CfgStatus::Unknown)
+            {
+                CfgStatus::Inactive => false,
+                CfgStatus::Active => meta.metas().any(|meta| self.attribute_unavailable(meta)),
+                CfgStatus::Unknown => true,
+            },
+            ast::Meta::UnsafeMeta(meta) => meta
+                .meta()
+                .is_none_or(|meta| self.attribute_unavailable(meta)),
+            _ => !meta.simple_name().is_some_and(|name| {
+                matches!(
+                    name.as_str(),
+                    "derive"
+                        | "doc"
+                        | "allow"
+                        | "warn"
+                        | "deny"
+                        | "forbid"
+                        | "expect"
+                        | "inline"
+                        | "repr"
+                        | "test"
+                        | "must_use"
+                        | "no_mangle"
+                        | "export_name"
+                        | "link"
+                        | "link_name"
+                        | "link_section"
+                        | "path"
+                        | "cold"
+                        | "deprecated"
+                        | "no_std"
+                        | "no_main"
+                        | "non_exhaustive"
+                        | "track_caller"
+                        | "automatically_derived"
+                        | "used"
+                        | "global_allocator"
+                        | "panic_handler"
+                )
+            }),
+        }
+    }
+
     pub fn options(&self) -> CfgOptions {
         let mut options = CfgOptions::default();
         for (key, value) in &self.cfg {

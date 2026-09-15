@@ -578,3 +578,29 @@ fn syntax_diagnostics_respect_the_crate_edition() {
     assert!(facts.diagnostics.is_empty(), "{:?}", facts.diagnostics);
     assert_eq!(targets(&facts, "entry"), vec!["src::lib::async"]);
 }
+
+#[test]
+fn unavailable_attribute_macros_do_not_claim_original_function_behavior() {
+    let dir = project(&[(
+        "src/lib.rs",
+        "#[unavailable] fn transformed() { leaf(); } #[cfg_attr(all(),unavailable)] fn conditional() { leaf(); } #[cfg_attr(test,unavailable)] fn unchanged() { leaf(); } fn leaf() {} fn entry() { transformed(); conditional(); unchanged(); }",
+    )]);
+    let facts = facts(&dir, AnalysisLevel::Semantic);
+    assert!(targets(&facts, "transformed").is_empty());
+    assert!(targets(&facts, "conditional").is_empty());
+    assert_eq!(targets(&facts, "unchanged"), vec!["src::lib::leaf"]);
+    assert_eq!(targets(&facts, "entry"), vec!["src::lib::unchanged"]);
+    assert!(
+        facts
+            .relations
+            .iter()
+            .any(|edge| edge.source == definition(&facts, "transformed").id
+                && matches!(
+                    edge.target,
+                    Target::Unknown {
+                        reason: UnknownReason::MacroUnavailable,
+                        ..
+                    }
+                ))
+    );
+}

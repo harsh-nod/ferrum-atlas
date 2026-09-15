@@ -17,6 +17,7 @@ struct Item {
     function: Option<Function>,
     configuration: String,
     ambiguous_crate: bool,
+    macro_unavailable: bool,
 }
 
 pub(super) fn analyze(
@@ -217,6 +218,14 @@ fn extract(
                 ),
             ));
             let function = ast::Fn::cast(node.clone()).and_then(|function| sema.to_def(&function));
+            let macro_unavailable = settings.has_attribute_macro(&node);
+            if macro_unavailable {
+                add_gap(
+                    &mut coverage,
+                    UnknownReason::MacroUnavailable,
+                    "An unavailable procedural attribute can change an item's identity or body; its call targets are withheld.",
+                );
+            }
             let definition = Definition {
                 id,
                 context_id: context.id.clone(),
@@ -250,6 +259,7 @@ fn extract(
                 function,
                 configuration: configuration.clone(),
                 ambiguous_crate,
+                macro_unavailable,
             });
         }
     }
@@ -271,7 +281,9 @@ fn extract(
         .iter()
         .filter_map(|item| {
             item.function.map(|function| {
-                let target = if item.ambiguous_crate {
+                let target = if item.macro_unavailable {
+                    Err(UnknownReason::MacroUnavailable)
+                } else if item.ambiguous_crate {
                     Err(UnknownReason::CfgUnknown)
                 } else if item
                     .node
@@ -386,7 +398,7 @@ fn extract(
                         .map(|path| format!("{path}!"))
                 })
                 .unwrap_or_else(|| "<incomplete call>".into());
-            let target = if mac.is_some() {
+            let target = if mac.is_some() || item.macro_unavailable {
                 unknown(UnknownReason::MacroUnavailable, &label)
             } else if level == AnalysisLevel::Syntax {
                 unknown(UnknownReason::SyntaxOnly, &label)
