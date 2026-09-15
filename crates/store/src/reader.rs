@@ -112,10 +112,17 @@ impl SnapshotReader {
     }
 
     pub fn definitions(&self, limit: usize) -> Result<Vec<Definition>> {
+        self.definitions_bounded(limit, 256 * 1024 * 1024)
+    }
+
+    pub fn definitions_bounded(&self, limit: usize, max_bytes: usize) -> Result<Vec<Definition>> {
         let mut statement = self
             .connection
             .prepare("SELECT payload FROM definitions ORDER BY id LIMIT ?1")?;
-        collect(statement.query_map([limit.min(100_001) as u32], |r| r.get::<_, String>(0))?)
+        collect_bounded(
+            statement.query_map([limit.min(100_001) as u32], |r| r.get::<_, String>(0))?,
+            max_bytes,
+        )
     }
 
     pub fn adjacency(
@@ -220,5 +227,21 @@ impl SnapshotReader {
 fn collect<T: DeserializeOwned>(
     rows: impl Iterator<Item = std::result::Result<String, rusqlite::Error>>,
 ) -> Result<Vec<T>> {
-    rows.map(|row| Ok(serde_json::from_str(&row?)?)).collect()
+    collect_bounded(rows, 2 * 1024 * 1024)
+}
+
+fn collect_bounded<T: DeserializeOwned>(
+    rows: impl Iterator<Item = std::result::Result<String, rusqlite::Error>>,
+    max_bytes: usize,
+) -> Result<Vec<T>> {
+    let mut bytes = 0usize;
+    rows.map(|row| {
+        let json = row?;
+        bytes = bytes.saturating_add(json.len());
+        if bytes > max_bytes {
+            return Err(Error::BudgetExhausted);
+        }
+        Ok(serde_json::from_str(&json)?)
+    })
+    .collect()
 }

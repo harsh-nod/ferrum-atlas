@@ -14,14 +14,20 @@ impl QueryEngine {
                 "diff snapshots must belong to one repository".into(),
             ));
         }
+        if before.definition_count as usize > DIFF_DEFINITIONS
+            || after.definition_count as usize > DIFF_DEFINITIONS
+        {
+            return Err(Error::BudgetExhausted);
+        }
         let control = QueryControl::new(Duration::from_secs(2));
         let old_reader = self.reader(&before.id, &before.context.id, &control)?;
         let new_reader = self.reader(&after.id, &after.context.id, &control)?;
-        let mut old = old_reader.definitions(DIFF_DEFINITIONS + 1)?;
-        let mut new = new_reader.definitions(DIFF_DEFINITIONS + 1)?;
-        let mut truncated = old.len() > DIFF_DEFINITIONS || new.len() > DIFF_DEFINITIONS;
-        old.truncate(DIFF_DEFINITIONS);
-        new.truncate(DIFF_DEFINITIONS);
+        let old = old_reader.definitions_bounded(DIFF_DEFINITIONS + 1, 16 * 1024 * 1024)?;
+        let new = new_reader.definitions_bounded(DIFF_DEFINITIONS + 1, 16 * 1024 * 1024)?;
+        if old.len() > DIFF_DEFINITIONS || new.len() > DIFF_DEFINITIONS {
+            return Err(Error::BudgetExhausted);
+        }
+        let mut truncated = false;
         let mut coverage = before.coverage.clone();
         if after.coverage.status != Status::Complete && coverage.status == Status::Complete {
             coverage.status = Status::Partial;

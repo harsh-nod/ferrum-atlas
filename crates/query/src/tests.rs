@@ -481,3 +481,42 @@ fn giant_source_windows_are_bounded_at_utf8_boundaries() {
     assert!(source.text.len() <= SOURCE_BYTES);
     assert!(source.text.ends_with('\u{03bb}'));
 }
+
+#[test]
+fn large_fact_payloads_exhaust_read_budgets_without_complete_empty_answers() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = Store::open(temp.path()).unwrap();
+    let mut facts = batch(6);
+    for relation in &mut facts.relations {
+        relation.target = Target::Unknown {
+            reason: UnknownReason::IndirectTargetUnknown,
+            label: "x".repeat(500_000),
+        };
+    }
+    let snapshot = store.publish(&facts, "main", None).unwrap();
+    let engine = QueryEngine::new(store.clone()).unwrap();
+    let reader = store.reader(&snapshot.id).unwrap();
+    assert_eq!(
+        reader
+            .adjacency(&facts.definitions[0].id, &Direction::Outgoing, 500)
+            .unwrap_err()
+            .code(),
+        "budget_exhausted"
+    );
+    let result = engine
+        .neighborhood_with_control(
+            &graph(&snapshot),
+            &QueryControl::new(Duration::from_secs(2)),
+        )
+        .unwrap();
+    assert!(result.page.truncated);
+    assert_eq!(result.coverage.status, Status::Partial);
+    facts.definitions[0].signature = "s".repeat(RESPONSE_BYTES + 1);
+    facts.relations.clear();
+    let next = store.publish(&facts, "main", Some(&snapshot.id)).unwrap();
+    let result = engine
+        .search(&next.id, &next.context.id, "", 10, None)
+        .unwrap();
+    assert!(result.page.truncated);
+    assert_eq!(result.coverage.status, Status::Partial);
+}

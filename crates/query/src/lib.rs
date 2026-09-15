@@ -164,6 +164,7 @@ impl QueryEngine {
         }
         let mut coverage = reader.snapshot.coverage.clone();
         let mut deadline_reached = control.stopped();
+        let mut read_exhausted = deadline_reached;
         let mut items = if deadline_reached {
             Vec::new()
         } else {
@@ -176,13 +177,14 @@ impl QueryEngine {
             ) {
                 Ok(items) => items,
                 Err(error) if error.code() == "budget_exhausted" => {
-                    deadline_reached = true;
+                    read_exhausted = true;
+                    deadline_reached = control.stopped();
                     Vec::new()
                 }
                 Err(error) => return Err(error.into()),
             }
         };
-        let mut truncated = items.len() > limit || deadline_reached;
+        let mut truncated = items.len() > limit || read_exhausted;
         items.truncate(limit);
         let mut bytes = 4096;
         let mut retained = 0;
@@ -196,7 +198,7 @@ impl QueryEngine {
             retained += 1;
         }
         items.truncate(retained);
-        let next_cursor = if truncated && !deadline_reached {
+        let next_cursor = if truncated && !read_exhausted {
             items
                 .last()
                 .map(|last| {
@@ -218,13 +220,13 @@ impl QueryEngine {
         } else {
             None
         };
-        if deadline_reached {
+        if read_exhausted {
             budget_coverage(
                 &mut coverage,
-                "Search deadline reached; result is incomplete",
+                "Search reached a time or payload read budget; result is incomplete",
             );
         }
-        if truncated && items.is_empty() && !deadline_reached {
+        if truncated && items.is_empty() && !read_exhausted {
             budget_coverage(
                 &mut coverage,
                 "A definition exceeds the response byte budget",
