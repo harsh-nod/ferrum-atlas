@@ -186,6 +186,26 @@ pub fn import(
     artifact: &Path,
 ) -> Result<ObservationSummary> {
     validate(bundle, snapshot, definitions, &artifact_sha256(artifact)?)?;
+    persist_bundle(root, bundle, snapshot)
+}
+
+/// Restore an already checksummed portable record. This validates identity
+/// consistency, not execution or possession of the original executable.
+pub fn restore(
+    root: &Path,
+    bundle: &ObservationBundle,
+    snapshot: &Snapshot,
+    definitions: &BTreeSet<DefinitionId>,
+) -> Result<ObservationSummary> {
+    validate(bundle, snapshot, definitions, &bundle.artifact.sha256)?;
+    persist_bundle(root, bundle, snapshot)
+}
+
+fn persist_bundle(
+    root: &Path,
+    bundle: &ObservationBundle,
+    snapshot: &Snapshot,
+) -> Result<ObservationSummary> {
     let folder = scope(root, &snapshot.id);
     fs::create_dir_all(&folder)?;
     use std::os::unix::fs::OpenOptionsExt;
@@ -228,6 +248,23 @@ pub fn import(
     }
     File::open(folder)?.sync_all()?;
     Ok(summary(&id, bundle))
+}
+
+/// Load one checksummed, bounded observation object after caller authorization.
+pub fn load(root: &Path, snapshot: &SnapshotId, id: &str) -> Result<ObservationBundle> {
+    let suffix = id
+        .strip_prefix("observation:")
+        .context("invalid observation ID")?;
+    ensure!(
+        suffix.len() == 64 && suffix.bytes().all(|b| b.is_ascii_hexdigit()),
+        "invalid observation ID"
+    );
+    let (_, bundle) = read_bundle(&scope(root, snapshot).join(format!("{suffix}.json")))?;
+    ensure!(
+        &bundle.snapshot_id == snapshot,
+        "observation snapshot mismatch"
+    );
+    Ok(bundle)
 }
 
 fn read_bundle(path: &Path) -> Result<(String, ObservationBundle)> {
@@ -290,22 +327,11 @@ pub fn window(
     offset: u32,
     limit: u32,
 ) -> Result<ObservationWindow> {
-    let suffix = id
-        .strip_prefix("observation:")
-        .context("invalid observation ID")?;
-    ensure!(
-        suffix.len() == 64 && suffix.bytes().all(|b| b.is_ascii_hexdigit()),
-        "invalid observation ID"
-    );
     ensure!(
         (1..=200).contains(&limit),
         "observation window limit must be 1-200"
     );
-    let (_, bundle) = read_bundle(&scope(root, snapshot).join(format!("{suffix}.json")))?;
-    ensure!(
-        &bundle.snapshot_id == snapshot,
-        "observation snapshot mismatch"
-    );
+    let bundle = load(root, snapshot, id)?;
     let total = bundle.tests.len() + bundle.streams.iter().map(|s| s.events.len()).sum::<usize>();
     let start = offset as usize;
     ensure!(start <= total, "observation offset out of range");

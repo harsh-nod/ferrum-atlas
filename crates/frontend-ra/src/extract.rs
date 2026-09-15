@@ -32,7 +32,7 @@ pub(super) fn analyze(
     })
 }
 
-fn extract(
+pub(super) fn extract(
     source: SourceSnapshot,
     context: BuildContext,
     level: AnalysisLevel,

@@ -24,6 +24,11 @@ pub fn analyze(
     context: BuildContext,
     level: AnalysisLevel,
 ) -> Result<FactBatch> {
+    validate_source(&source, &context)?;
+    extract::analyze(source, context, level)
+}
+
+fn validate_source(source: &SourceSnapshot, context: &BuildContext) -> Result<()> {
     ensure!(
         context.trust == "read_only",
         "analysis requires a read_only context"
@@ -60,5 +65,64 @@ pub fn analyze(
         bytes <= 256 * 1024 * 1024,
         "analysis total byte budget exceeded"
     );
-    extract::analyze(source, context, level)
+    Ok(())
+}
+
+/// An expendable warm frontend cache. Persisted facts never serialize this database.
+#[derive(Default)]
+pub struct AnalyzerSession {
+    database: Option<ra_ap_ide_db::RootDatabase>,
+    input_key: String,
+    text: Vec<String>,
+}
+impl AnalyzerSession {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn analyze(
+        &mut self,
+        source: SourceSnapshot,
+        context: BuildContext,
+        level: AnalysisLevel,
+    ) -> Result<FactBatch> {
+        validate_source(&source, &context)?;
+        let configurations = configuration::Configurations::new(&source, &context)?;
+        // File IDs are positional in this adapter. Changed path sets, manifests, or
+        // configurations rebuild the crate graph; only exact-key file text is reused.
+        let key = atlas_model::digest(
+            "warm-inputs",
+            &(
+                &source.repository_id,
+                &source.manifests,
+                &context,
+                source
+                    .files
+                    .iter()
+                    .map(|file| &file.path)
+                    .collect::<Vec<_>>(),
+                PRODUCER,
+            ),
+        );
+        if let (Some(database), true) = (self.database.as_mut(), self.input_key == key) {
+            let mut change = ra_ap_ide_db::ChangeWithProcMacros::default();
+            for (index, file) in source.files.iter().enumerate() {
+                if self.text[index] != file.text {
+                    change.change_file(
+                        ra_ap_vfs::FileId::from_raw(index as u32),
+                        Some(file.text.clone()),
+                    );
+                }
+            }
+            database.apply_change(change);
+        } else {
+            self.database = Some(database::load(&source, &context, &configurations)?);
+        }
+        self.input_key = key;
+        self.text = source.files.iter().map(|file| file.text.clone()).collect();
+        let database = self.database.as_ref().unwrap();
+        ra_ap_hir::attach_db(database, || {
+            extract::extract(source, context, level, database, &configurations)
+        })
+    }
 }

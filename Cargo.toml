@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/model", "crates/ingest", "crates/frontend-ra", "crates/store", "crates/query", "crates/evidence", "crates/server", "crates/cli", "xtask"]
+members = ["crates/model", "crates/ingest", "crates/frontend-ra", "crates/store", "crates/query", "crates/evidence", "crates/analysis", "crates/scheduler", "crates/server", "crates/cli", "xtask"]
 resolver = "2"
 
 [workspace.package]
@@ -16,6 +16,8 @@ atlas-frontend = { path = "crates/frontend-ra" }
 atlas-store = { path = "crates/store" }
 atlas-query = { path = "crates/query" }
 atlas-evidence = { path = "crates/evidence" }
+atlas-scheduler = { path = "crates/scheduler" }
+atlas-analysis = { path = "crates/analysis" }
 atlas-server = { path = "crates/server" }
 anyhow = "=1.0.104"
 serde = { version = "=1.0.229", features = ["derive"] }
@@ -37,6 +39,8 @@ ra_ap_base_db = "=0.0.349"
 ra_ap_cfg = "=0.0.349"
 ra_ap_vfs = "=0.0.349"
 ra_ap_span = "=0.0.349"
+petgraph = "=0.8.3"
+futures-util = { version = "=0.3.34", default-features = false, features = ["std", "async-await"] }
 
 [profile.dev]
 debug = 0

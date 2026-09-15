@@ -14,6 +14,7 @@ atlas-store.workspace = true
 atlas-query.workspace = true
 atlas-evidence.workspace = true
 atlas-server.workspace = true
+atlas-scheduler.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true

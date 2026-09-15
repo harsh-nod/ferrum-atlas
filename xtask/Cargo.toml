@@ -5,4 +5,5 @@ edition.workspace = true
 license.workspace = true
 [dependencies]
 atlas-model.workspace = true
+atlas-analysis.workspace = true
 anyhow.workspace = true

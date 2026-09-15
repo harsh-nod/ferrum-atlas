@@ -1,4 +1,5 @@
 //! Authenticated, bounded local HTTP queries over immutable snapshots.
+mod advanced;
 use atlas_model::*;
 use atlas_query::{QueryControl, QueryEngine};
 use axum::{
@@ -33,6 +34,7 @@ pub struct ServerConfig {
     pub web_dir: PathBuf,
     pub max_concurrent_queries: usize,
     pub observations_dir: PathBuf,
+    pub scheduler: Option<atlas_scheduler::Scheduler>,
 }
 
 impl ServerConfig {
@@ -85,6 +87,8 @@ struct AppState {
     hosts: Arc<Vec<String>>,
     permits: Arc<Semaphore>,
     observations_dir: Arc<PathBuf>,
+    scheduler: Option<atlas_scheduler::Scheduler>,
+    event_streams: Arc<Semaphore>,
 }
 
 pub fn router(engine: QueryEngine, config: &ServerConfig) -> anyhow::Result<Router> {
@@ -98,6 +102,8 @@ pub fn router(engine: QueryEngine, config: &ServerConfig) -> anyhow::Result<Rout
         ]),
         permits: Arc::new(Semaphore::new(config.max_concurrent_queries)),
         observations_dir: Arc::new(config.observations_dir.clone()),
+        scheduler: config.scheduler.clone(),
+        event_streams: Arc::new(Semaphore::new(8)),
     };
     let api = Router::new()
         .route("/capabilities", get(|| async { Json(capabilities()) }))
@@ -107,11 +113,21 @@ pub fn router(engine: QueryEngine, config: &ServerConfig) -> anyhow::Result<Rout
         .route("/definitions/{id}", get(definition))
         .route("/source/{id}", get(source))
         .route("/graph/neighborhood", post(neighborhood))
+        .route("/graph/analysis", post(advanced::graph_analysis))
+        .route("/graph/path", post(advanced::graph_path))
+        .route("/queries/impact", post(advanced::impact))
+        .route("/traces/compare", post(advanced::trace_compare))
         .route("/diff", post(diff))
         .route("/flow/{id}", get(flow))
+        .route("/bodies/{id}/flow", get(flow))
         .route("/evidence/{id}", get(evidence))
         .route("/observations", get(observations))
         .route("/observations/{id}", get(observation_window))
+        .route("/traces/{id}/window", get(observation_window))
+        .route("/jobs", get(jobs).post(submit_job))
+        .route("/jobs/{id}", get(job))
+        .route("/jobs/{id}/events", get(job_events))
+        .route("/jobs/{id}/cancel", post(cancel_job))
         .fallback(|| async {
             HttpError::new(StatusCode::NOT_FOUND, "not_found", "Unknown API endpoint")
         })
@@ -403,6 +419,127 @@ struct FlowParams {
 async fn snapshots(State(state): State<AppState>) -> Result<Json<Vec<Snapshot>>, HttpError> {
     execute(state, |q| q.snapshots()).await
 }
+
+fn scheduler(state: &AppState) -> Result<atlas_scheduler::Scheduler, HttpError> {
+    state.scheduler.clone().ok_or_else(|| {
+        HttpError::new(
+            StatusCode::NOT_IMPLEMENTED,
+            "unsupported_capability",
+            "Analysis jobs are disabled for this server",
+        )
+    })
+}
+fn job_error(_: anyhow::Error) -> HttpError {
+    HttpError::new(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "analysis_unavailable",
+        "The analysis queue is full or unavailable",
+    )
+}
+async fn jobs(State(state): State<AppState>) -> Result<Json<Vec<JobRecord>>, HttpError> {
+    let scheduler = scheduler(&state)?;
+    perform(state, move |_| scheduler.list().map_err(job_error)).await
+}
+async fn submit_job(
+    State(state): State<AppState>,
+    Json(request): Json<JobRequest>,
+) -> Result<Json<JobRecord>, HttpError> {
+    atlas_scheduler::validate_request(&request).map_err(|_| {
+        HttpError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_query",
+            "Invalid read-only analysis request",
+        )
+    })?;
+    let scheduler = scheduler(&state)?;
+    perform(state, move |_| scheduler.submit(request).map_err(job_error)).await
+}
+async fn job(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<JobRecord>, HttpError> {
+    let scheduler = scheduler(&state)?;
+    perform(state, move |_| {
+        scheduler
+            .get(&id)
+            .map_err(|_| HttpError::new(StatusCode::NOT_FOUND, "not_found", "Unknown analysis job"))
+    })
+    .await
+}
+async fn cancel_job(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<JobRecord>, HttpError> {
+    let scheduler = scheduler(&state)?;
+    perform(state, move |_| {
+        scheduler
+            .cancel(&id)
+            .map_err(|_| HttpError::new(StatusCode::NOT_FOUND, "not_found", "Unknown analysis job"))
+    })
+    .await
+}
+async fn job_events(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: axum::http::HeaderMap,
+) -> Result<
+    axum::response::Sse<
+        impl futures_util::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>,
+    >,
+    HttpError,
+> {
+    let scheduler = scheduler(&state)?;
+    scheduler
+        .get(&id)
+        .map_err(|_| HttpError::new(StatusCode::NOT_FOUND, "not_found", "Unknown analysis job"))?;
+    let after = match headers.get("last-event-id") {
+        Some(value) => value
+            .to_str()
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .ok_or_else(|| {
+                HttpError::new(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_query",
+                    "Invalid event sequence",
+                )
+            })?,
+        None => 0,
+    };
+    let permit = state
+        .event_streams
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| {
+            HttpError::new(
+                StatusCode::TOO_MANY_REQUESTS,
+                "overloaded",
+                "All progress stream slots are busy",
+            )
+        })?;
+    let stream = futures_util::stream::unfold(
+        (scheduler, id, after, permit),
+        |(scheduler, id, after, permit)| async move {
+            loop {
+                let job = scheduler.get(&id).ok()?;
+                if let Some(event) = job.events.iter().find(|event| event.sequence > after) {
+                    let sequence = event.sequence;
+                    let event = axum::response::sse::Event::default()
+                        .event("progress")
+                        .id(sequence.to_string())
+                        .json_data(event)
+                        .ok()?;
+                    return Some((Ok(event), (scheduler, id, sequence, permit)));
+                }
+                if job.status.terminal() {
+                    return None;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        },
+    );
+    Ok(axum::response::Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::default()))
+}
 async fn snapshot(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -586,6 +723,7 @@ mod tests {
             web_dir: PathBuf::from("missing-web-assets"),
             max_concurrent_queries: 4,
             observations_dir: PathBuf::from("missing-observations"),
+            scheduler: None,
         }
     }
     fn test_app() -> (tempfile::TempDir, Router) {
@@ -616,6 +754,11 @@ mod tests {
             "/v1/evidence/id",
             "/v1/observations",
             "/v1/observations/id",
+            "/v1/jobs",
+            "/v1/jobs/id",
+            "/v1/jobs/id/events",
+            "/v1/bodies/id/flow",
+            "/v1/traces/id/window",
         ] {
             let response = app
                 .clone()
@@ -624,7 +767,12 @@ mod tests {
                 .unwrap();
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{path}");
         }
-        for path in ["/v1/graph/neighborhood", "/v1/diff"] {
+        for path in [
+            "/v1/graph/neighborhood",
+            "/v1/diff",
+            "/v1/jobs",
+            "/v1/jobs/id/cancel",
+        ] {
             let response = app
                 .clone()
                 .oneshot(
@@ -637,6 +785,98 @@ mod tests {
                 .unwrap();
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{path}");
         }
+    }
+    #[tokio::test]
+    async fn job_routes_require_explicit_enablement() {
+        let (_temp, app) = test_app();
+        let response = app
+            .oneshot(request("/v1/jobs", true).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+    }
+
+    #[tokio::test]
+    async fn job_events_replay_to_terminal_without_blocking_queries() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = atlas_store::Store::open(temp.path()).unwrap();
+        let mut settings = config();
+        settings.scheduler = Some(
+            atlas_scheduler::Scheduler::start(
+                temp.path(),
+                std::path::Path::new("/bin/false"),
+                Default::default(),
+            )
+            .unwrap(),
+        );
+        let app = router(QueryEngine::new(store).unwrap(), &settings).unwrap();
+        let response = app
+            .clone()
+            .oneshot(
+                request("/v1/jobs", true)
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"profile":"default","level":"syntax"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let record: JobRecord = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), 16384)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let response = app
+            .clone()
+            .oneshot(request("/v1/snapshots", true).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let path = format!("/v1/jobs/{}/events", record.id);
+        let response = app
+            .clone()
+            .oneshot(request(&path, true).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert!(
+            response.headers()[header::CONTENT_TYPE]
+                .to_str()
+                .unwrap()
+                .contains("text/event-stream")
+        );
+        let body = tokio::time::timeout(
+            Duration::from_secs(3),
+            axum::body::to_bytes(response.into_body(), 16384),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        assert!(text.contains("event: progress"));
+        assert!(text.contains("\"status\":\"failed\""));
+        let response = app
+            .clone()
+            .oneshot(
+                request(&path, true)
+                    .header("last-event-id", "invalid")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let response = app
+            .oneshot(
+                request(&format!("/v1/jobs/{}/cancel", record.id), true)
+                    .method("POST")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
     }
     #[tokio::test]
     async fn rejects_foreign_origins_and_rebound_hosts() {
@@ -746,6 +986,8 @@ mod tests {
             hosts: Arc::new(vec![]),
             permits: Arc::new(Semaphore::new(1)),
             observations_dir: Arc::new(temp.path().join("observations")),
+            scheduler: None,
+            event_streams: Arc::new(Semaphore::new(8)),
         };
         let permit = state.permits.clone().acquire_owned().await.unwrap();
         let result = perform::<Vec<Snapshot>, _>(state.clone(), |_| {

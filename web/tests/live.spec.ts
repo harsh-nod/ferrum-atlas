@@ -14,6 +14,7 @@ import type {
   ObservationBundle,
   ObservationSummary,
   ObservationWindow,
+  JobRecord,
 } from "../src/api/types";
 
 test("real capture, HTTP, source graph, observations, edit and restart", async ({
@@ -60,6 +61,7 @@ test("real capture, HTTP, source graph, observations, edit and restart", async (
         "--store",
         store,
         "serve",
+        "--enable-jobs",
         "--listen",
         `127.0.0.1:${port}`,
         "--web-dir",
@@ -331,7 +333,15 @@ test("real capture, HTTP, source graph, observations, edit and restart", async (
       join(workspace, "src/engine.rs"),
       "pub fn step(value: u32) -> u32 { leaf(value) + 7 }\nfn leaf(value: u32) -> u32 { value + 1 }\n",
     );
-    const after = run(["index"]) as Snapshot;
+    const queued = await api<JobRecord>("/jobs", { profile: "default", level: "semantic", priority: "foreground" });
+    const events = await fetch(`${base}/v1/jobs/${queued.id}/events`, { headers: { Authorization: `Bearer ${token}` } });
+    expect(events.headers.get("content-type")).toContain("text/event-stream");
+    const progress = await events.text();
+    expect(progress).toContain('"status":"succeeded"');
+    const completed = await api<JobRecord>(`/jobs/${queued.id}`);
+    expect(completed.status).toBe("succeeded");
+    expect(completed.snapshot_id).toBeTruthy();
+    const after = await api<Snapshot>(`/snapshots/${completed.snapshot_id}`);
     const diff = await api<DiffResponse>("/diff", {
       before: before.id,
       after: after.id,
@@ -345,6 +355,7 @@ test("real capture, HTTP, source graph, observations, edit and restart", async (
     ).toBeTruthy();
     await stop();
     await start();
+    expect((await api<JobRecord>(`/jobs/${queued.id}`)).status).toBe("succeeded");
     const restartedSource = await api<SourceWindow>(
       `/source/${encodeURIComponent(entry.file_id)}?${pin(before)}`,
     );

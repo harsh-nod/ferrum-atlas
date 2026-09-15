@@ -4,7 +4,7 @@ fn main() -> Result<()> {
         .parent()
         .unwrap();
     let path = root.join("web/src/api/types.ts");
-    let expected = atlas_model::typescript();
+    let expected = atlas_model::typescript() + &atlas_analysis::typescript();
     match std::env::args().nth(1).as_deref() {
         Some("types") => {
             std::fs::create_dir_all(path.parent().unwrap())?;

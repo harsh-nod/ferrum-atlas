@@ -1,0 +1,170 @@
+use super::*;
+use atlas_analysis::{
+    AnalysisControl, AnalysisLimits, GraphAnalysis, PathAnalysis, SelectedGraph,
+    TraceCompareRequest, TraceComparison,
+};
+
+struct AnalysisGuard {
+    query: QueryControl,
+    analysis: AnalysisControl,
+}
+impl AnalysisGuard {
+    fn new() -> Self {
+        Self {
+            query: QueryControl::new(Duration::from_millis(250)),
+            analysis: AnalysisControl::new(Duration::from_millis(250)),
+        }
+    }
+}
+impl Drop for AnalysisGuard {
+    fn drop(&mut self) {
+        self.query.cancel();
+        self.analysis.cancel();
+    }
+}
+fn analysis_error(error: atlas_analysis::AnalysisError) -> HttpError {
+    match error {
+        atlas_analysis::AnalysisError::InvalidInput(_) => HttpError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_query",
+            "Invalid selected analysis input",
+        ),
+        atlas_analysis::AnalysisError::BudgetExhausted => HttpError::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "budget_exhausted",
+            "Selected analysis exceeds its bounded scope",
+        ),
+    }
+}
+fn selected(graph: &GraphResponse) -> SelectedGraph<'_> {
+    SelectedGraph {
+        nodes: &graph.nodes,
+        edges: &graph.edges,
+        coverage: &graph.coverage,
+        input_truncated: graph.page.truncated || graph.work.deadline_reached,
+    }
+}
+
+pub(super) async fn graph_analysis(
+    State(state): State<AppState>,
+    Json(request): Json<GraphRequest>,
+) -> Result<Json<AnalysisResponse<GraphAnalysis>>, HttpError> {
+    let guard = AnalysisGuard::new();
+    let query = guard.query.clone();
+    let analysis = guard.analysis.clone();
+    perform(state, move |q| {
+        let graph = q.neighborhood_with_control(&request, &query)?;
+        let result =
+            atlas_analysis::analyze_graph(&selected(&graph), AnalysisLimits::default(), &analysis)
+                .map_err(analysis_error)?;
+        Ok(AnalysisResponse {
+            api_version: API_VERSION.into(),
+            snapshot_id: graph.snapshot_id,
+            context_id: graph.context_id,
+            analysis: result,
+        })
+    })
+    .await
+}
+
+pub(super) async fn graph_path(
+    State(state): State<AppState>,
+    Json(request): Json<PathRequest>,
+) -> Result<Json<AnalysisResponse<PathAnalysis>>, HttpError> {
+    let guard = AnalysisGuard::new();
+    let query = guard.query.clone();
+    let analysis = guard.analysis.clone();
+    perform(state, move |q| {
+        if let Some(target) = &request.target {
+            q.definition(
+                &request.graph.snapshot_id,
+                &request.graph.context_id,
+                target,
+            )?;
+        }
+        let graph = q.neighborhood_with_control(&request.graph, &query)?;
+        let result = atlas_analysis::find_path(
+            &selected(&graph),
+            &request.graph.definition_id,
+            request.target.as_ref(),
+            AnalysisLimits::default(),
+            &analysis,
+        )
+        .map_err(analysis_error)?;
+        Ok(AnalysisResponse {
+            api_version: API_VERSION.into(),
+            snapshot_id: graph.snapshot_id,
+            context_id: graph.context_id,
+            analysis: result,
+        })
+    })
+    .await
+}
+
+pub(super) async fn impact(
+    State(state): State<AppState>,
+    Json(mut request): Json<GraphRequest>,
+) -> Result<Json<GraphResponse>, HttpError> {
+    request.direction = Direction::Incoming;
+    let control = QueryControl::new(Duration::from_millis(250));
+    let _guard = CancelOnDrop(control.clone());
+    execute(state, move |q| {
+        let mut graph = q.neighborhood_with_control(&request, &control)?;
+        graph.coverage.limitations.push("Impact consists of bounded selected-snapshot direct-call reachability candidates, not proof of changed behavior or observed execution. Other relation families and unobserved dynamic targets are excluded.".into());
+        Ok(graph)
+    }).await
+}
+
+pub(super) async fn trace_compare(
+    State(state): State<AppState>,
+    Json(request): Json<TraceAlignmentRequest>,
+) -> Result<Json<TraceAlignmentResponse<TraceComparison>>, HttpError> {
+    let root = state.observations_dir.clone();
+    let guard = AnalysisGuard::new();
+    let control = guard.analysis.clone();
+    perform(state, move |q| {
+        check_observation_scope(&q, &request.before_snapshot_id, &request.before_context_id)?;
+        check_observation_scope(&q, &request.after_snapshot_id, &request.after_context_id)?;
+        let unavailable = |_| {
+            HttpError::new(
+                StatusCode::NOT_FOUND,
+                "unavailable_evidence",
+                "The selected observation is unavailable or invalid",
+            )
+        };
+        let before = atlas_evidence::load(
+            &root,
+            &request.before_snapshot_id,
+            &request.before_observation_id,
+        )
+        .map_err(unavailable)?;
+        let after = atlas_evidence::load(
+            &root,
+            &request.after_snapshot_id,
+            &request.after_observation_id,
+        )
+        .map_err(unavailable)?;
+        let comparison = atlas_analysis::compare_trace_windows(
+            &before,
+            &after,
+            &TraceCompareRequest {
+                before_stream_id: request.before_stream_id,
+                after_stream_id: request.after_stream_id,
+                before_offset: request.before_offset,
+                after_offset: request.after_offset,
+                max_events: request.max_events,
+                max_anchors: request.max_anchors,
+            },
+            &control,
+        )
+        .map_err(analysis_error)?;
+        Ok(TraceAlignmentResponse {
+            before: request.before_snapshot_id,
+            after: request.after_snapshot_id,
+            before_context: request.before_context_id,
+            after_context: request.after_context_id,
+            comparison,
+        })
+    })
+    .await
+}

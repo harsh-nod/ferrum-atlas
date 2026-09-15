@@ -61,6 +61,12 @@ enum Commands {
         memory_mib: u64,
         #[arg(long, default_value_t = 4096)]
         disk_quota_mib: u64,
+        #[arg(long, hide = true)]
+        progress_file: Option<PathBuf>,
+        #[arg(long, hide = true)]
+        supervisor_pid: Option<u32>,
+        #[arg(long, hide = true)]
+        job_id: Option<String>,
     },
     /// Serve the browser and authenticated read-only API on loopback.
     Serve {
@@ -72,6 +78,12 @@ enum Commands {
         token_file: Option<PathBuf>,
         #[arg(long, default_value_t = 8)]
         query_slots: usize,
+        /// Enable the bounded index queue for the registered workspace.
+        #[arg(long)]
+        enable_jobs: bool,
+        /// Versioned resource policy for the local analysis queue.
+        #[arg(long)]
+        scheduler_config: Option<PathBuf>,
     },
     /// List immutable snapshots.
     Snapshots,
@@ -99,11 +111,35 @@ enum Commands {
     },
     /// Validate persisted object references and checksums without running the workspace.
     Doctor,
-    /// Report unreferenced store-owned objects. Deletion is not enabled.
+    /// Plan retention or execute an exact previously reviewed GC plan.
     Gc {
-        #[arg(long, required = true)]
+        #[arg(long, conflicts_with = "execute", required_unless_present = "execute")]
         dry_run: bool,
+        #[arg(long, requires = "plan")]
+        execute: bool,
+        #[arg(long)]
+        plan: Option<PathBuf>,
+        #[arg(long, default_value_t = 3)]
+        keep_recent: usize,
+        #[arg(long, default_value_t = 86400)]
+        grace_seconds: u64,
+        #[arg(long)]
+        output: Option<PathBuf>,
     },
+    /// Retain an immutable snapshot under a named pin.
+    Pin {
+        #[arg(long)]
+        snapshot: String,
+        #[arg(long)]
+        name: String,
+    },
+    /// Remove a named retention pin, not the snapshot itself.
+    Unpin {
+        #[arg(long)]
+        name: String,
+    },
+    /// List retention pins.
+    Pins,
     /// Write an evidence export for one pinned snapshot.
     Export {
         #[arg(long)]
@@ -175,12 +211,26 @@ struct IndexJob {
     memory_mib: u64,
     timeout: u64,
     parent_pid: u32,
+    #[serde(default)]
+    progress_file: Option<PathBuf>,
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
     if let Commands::Worker { job, output } = &cli.command {
         return worker(job, output);
+    }
+    if let Commands::Index {
+        supervisor_pid: Some(parent),
+        ..
+    } = &cli.command
+    {
+        rustix::process::set_parent_process_death_signal(Some(rustix::process::Signal::KILL))?;
+        ensure!(
+            rustix::process::getppid()
+                .is_some_and(|pid| pid.as_raw_nonzero().get() as u32 == *parent),
+            "analysis supervisor exited"
+        );
     }
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -228,6 +278,9 @@ async fn run(cli: Cli) -> Result<()> {
             timeout,
             memory_mib,
             disk_quota_mib,
+            progress_file,
+            supervisor_pid: _,
+            job_id,
         } => {
             ensure!(
                 (1..=3600).contains(&timeout),
@@ -271,8 +324,20 @@ async fn run(cli: Cli) -> Result<()> {
                 memory_mib,
                 timeout,
                 parent_pid: std::process::id(),
+                progress_file: progress_file.clone(),
             };
             let store = Store::open(&cli.store)?;
+            use std::os::unix::fs::OpenOptionsExt;
+            let index_lease = fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .mode(0o600)
+                .open(cli.store.join("index.lock"))?;
+            index_lease
+                .try_lock()
+                .context("another index job is active for this store")?;
             let quota = disk_quota_mib
                 .checked_mul(1024 * 1024)
                 .context("disk quota overflow")?;
@@ -283,12 +348,18 @@ async fn run(cli: Cli) -> Result<()> {
             let head = store.head(&profile)?;
             let start = Instant::now();
             let batch = run_worker(&cli.store, &job)?;
+            progress(progress_file.as_deref(), JobStage::Validation)?;
             let bytes = serde_json::to_vec(&batch)?.len() as u64;
             ensure!(
                 directory_bytes(&cli.store)?.saturating_add(bytes.saturating_mul(3))
                     < quota.saturating_mul(90) / 100,
                 "publication paused: estimated output would exceed 90% of disk quota"
             );
+            progress(progress_file.as_deref(), JobStage::Publication)?;
+            let _fence = job_id
+                .as_deref()
+                .map(|id| atlas_scheduler::publication_guard(&cli.store, &profile, id))
+                .transpose()?;
             let snapshot = store.publish(&batch, &profile, head.as_ref())?;
             eprintln!(
                 "Published {} definitions and {} relations in {} ms ({:?} coverage)",
@@ -304,6 +375,8 @@ async fn run(cli: Cli) -> Result<()> {
             web_dir,
             token_file,
             query_slots,
+            enable_jobs,
+            scheduler_config,
         } => {
             ensure!(
                 listen.ip().is_loopback(),
@@ -324,12 +397,37 @@ async fn run(cli: Cli) -> Result<()> {
                 None => atlas_server::session_token()?,
             };
             let engine = QueryEngine::new(Store::open(&cli.store)?)?;
+            ensure!(
+                enable_jobs || scheduler_config.is_none(),
+                "--scheduler-config requires --enable-jobs"
+            );
+            let scheduler = if enable_jobs {
+                read_config(&cli.store)?;
+                let policy = match scheduler_config {
+                    Some(path) => {
+                        ensure!(
+                            fs::metadata(&path)?.len() <= 4096,
+                            "scheduler configuration too large"
+                        );
+                        serde_json::from_reader(File::open(path)?)?
+                    }
+                    None => atlas_scheduler::SchedulerConfig::default(),
+                };
+                Some(atlas_scheduler::Scheduler::start(
+                    &cli.store,
+                    &std::env::current_exe()?,
+                    policy,
+                )?)
+            } else {
+                None
+            };
             let config = atlas_server::ServerConfig {
                 listen,
                 token,
                 web_dir,
                 max_concurrent_queries: query_slots,
                 observations_dir: cli.store.join("observations"),
+                scheduler,
             };
             config.validate()?;
             eprintln!("Ferrum Atlas: http://{listen}/#token={}", config.token);
@@ -386,7 +484,49 @@ async fn run(cli: Cli) -> Result<()> {
                 "Read-only analysis; compiler MIR and executable worker sandbox unavailable. No workspace commands were run."
             );
         }
-        Commands::Gc { dry_run: _ } => print_json(&Store::open(&cli.store)?.gc_dry_run()?)?,
+        Commands::Gc {
+            dry_run: _,
+            execute,
+            plan,
+            keep_recent,
+            grace_seconds,
+            output,
+        } => {
+            let store = Store::open(&cli.store)?;
+            if execute {
+                ensure!(
+                    output.is_none(),
+                    "--output is only valid when creating a plan"
+                );
+                let path = plan.context("--plan is required")?;
+                ensure!(
+                    fs::metadata(&path)?.len() <= 16 * 1024 * 1024,
+                    "GC plan exceeds 16 MiB"
+                );
+                let plan = serde_json::from_reader(File::open(path)?)?;
+                print_json(&store.gc_execute(&plan)?)?;
+            } else {
+                ensure!(plan.is_none(), "--plan is only valid with --execute");
+                let plan = store.gc_plan(&atlas_store::RetentionPolicy {
+                    keep_recent,
+                    grace_period: Duration::from_secs(grace_seconds),
+                    additional_roots: Default::default(),
+                })?;
+                match output {
+                    Some(path) => private_json(&path, &plan)?,
+                    None => print_json(&plan)?,
+                }
+            }
+        }
+        Commands::Pin { snapshot, name } => {
+            let store = Store::open(&cli.store)?;
+            store.pin(&SnapshotId(snapshot), &name)?;
+            print_json(&store.pins()?)?;
+        }
+        Commands::Unpin { name } => {
+            print_json(&serde_json::json!({"removed":Store::open(&cli.store)?.unpin(&name)?}))?
+        }
+        Commands::Pins => print_json(&Store::open(&cli.store)?.pins()?)?,
         Commands::ImportEvidence {
             snapshot,
             bundle,
@@ -400,7 +540,8 @@ async fn run(cli: Cli) -> Result<()> {
             let store = Store::open(&cli.store)?;
             let id = SnapshotId(snapshot);
             let metadata = store.snapshot(&id)?;
-            let definitions = store.reader(&id)?.definitions(100_001)?;
+            let reader = store.reader(&id)?;
+            let definitions = reader.definitions(100_001)?;
             ensure!(
                 definitions.len() <= 100_000,
                 "evidence import mapping exceeds 100,000 definitions"
@@ -413,6 +554,7 @@ async fn run(cli: Cli) -> Result<()> {
                 &ids,
                 &artifact,
             )?;
+            drop(reader);
             print_json(&imported)?;
         }
         Commands::Export { snapshot, output } => {
@@ -600,13 +742,31 @@ fn worker(job_path: &Path, output: &Path) -> Result<()> {
         explicit_context: job.explicit_context,
         ..Default::default()
     };
+    progress(job.progress_file.as_deref(), JobStage::Capture)?;
     let (source, context) = atlas_ingest::capture(&job.workspace, &options)?;
     let level = match job.level {
         Level::Syntax => AnalysisLevel::Syntax,
         Level::Semantic => AnalysisLevel::Semantic,
     };
+    progress(
+        job.progress_file.as_deref(),
+        match job.level {
+            Level::Syntax => JobStage::Syntax,
+            Level::Semantic => JobStage::Semantics,
+        },
+    )?;
     let facts = atlas_frontend::analyze(source, context, level)?;
     private_json(output, &facts)
+}
+
+fn progress(path: Option<&Path>, stage: JobStage) -> Result<()> {
+    if let Some(path) = path {
+        let parent = path.parent().context("progress path has no parent")?;
+        let mut file = tempfile::NamedTempFile::new_in(parent)?;
+        serde_json::to_writer(&mut file, &stage)?;
+        file.persist(path)?;
+    }
+    Ok(())
 }
 
 fn private_json(path: &Path, value: &impl Serialize) -> Result<()> {
@@ -674,6 +834,7 @@ mod tests {
             memory_mib: 256,
             timeout: 1,
             parent_pid: u32::MAX,
+            progress_file: None,
         };
         let job_path = temp.path().join("job.json");
         private_json(&job_path, &job).unwrap();

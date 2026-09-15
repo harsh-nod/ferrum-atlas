@@ -6,6 +6,10 @@ use ts_rs::TS;
 
 mod observations;
 pub use observations::*;
+mod jobs;
+pub use jobs::*;
+mod analysis;
+pub use analysis::*;
 
 pub const SCHEMA_VERSION: u32 = 1;
 pub const API_VERSION: &str = "1";
@@ -437,6 +441,21 @@ pub fn typescript() -> String {
         ObservationBundle,
         ObservationSummary,
         ObservationWindow
+    );
+    emit!(
+        JobLevel,
+        JobPriority,
+        JobRequest,
+        JobStatus,
+        JobStage,
+        JobEvent,
+        JobRecord
+    );
+    emit!(
+        AnalysisResponse<Definition>,
+        PathRequest,
+        TraceAlignmentRequest,
+        TraceAlignmentResponse<Definition>
     );
     output
 }
